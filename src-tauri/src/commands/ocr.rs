@@ -1637,7 +1637,7 @@ mod windows_ocr {
     fn load_software_bitmap(
         path: &PathBuf,
         rotation_degrees: i64,
-        engine: &OcrEngine,
+        _engine: &OcrEngine,
     ) -> Result<(SoftwareBitmap, f64, f64), String> {
         let image = image::open(path).map_err(|error| format!("读取入库图片失败：{error}"))?;
         let image = match rotation_degrees.rem_euclid(360) {

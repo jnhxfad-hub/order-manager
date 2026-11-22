@@ -1,0 +1,30 @@
+export type Customer = {
+  id: string
+  customerName: string
+  phone: string
+  customerAddress: string
+  defaultPricingTaxIncluded: boolean
+  bridgeProcessingFeeTaxIncludedX100: number
+  powderProcessingFeeTaxIncludedX100: number
+  billetProcessingFeeTaxIncludedX100: number
+  oxidationProcessingFeeTaxIncludedX100: number
+  electrophoresisProcessingFeeTaxIncludedX100: number
+  bridgeProcessingFeeTaxExcludedX100: number
+  powderProcessingFeeTaxExcludedX100: number
+  billetProcessingFeeTaxExcludedX100: number
+  oxidationProcessingFeeTaxExcludedX100: number
+  electrophoresisProcessingFeeTaxExcludedX100: number
+  specialPricingKeyword: string
+  specialBridgeProcessingFeeTaxIncludedX100: number
+  specialPowderProcessingFeeTaxIncludedX100: number
+  specialBilletProcessingFeeTaxIncludedX100: number
+  specialOxidationProcessingFeeTaxIncludedX100: number
+  specialElectrophoresisProcessingFeeTaxIncludedX100: number
+  specialBridgeProcessingFeeTaxExcludedX100: number
+  specialPowderProcessingFeeTaxExcludedX100: number
+  specialBilletProcessingFeeTaxExcludedX100: number
+  specialOxidationProcessingFeeTaxExcludedX100: number
+  specialElectrophoresisProcessingFeeTaxExcludedX100: number
+  createdAt: string
+  updatedAt: string
+}

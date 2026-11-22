@@ -1,0 +1,818 @@
+# Codex 项目上下文交接摘要
+
+## 项目概况
+
+- 项目目录：`/Users/jnhxf/projects/r/order-manager`
+- 技术栈：Tauri v2 + React 19 + TypeScript + Vite + Tailwind CSS v4 + shadcn/Base UI + SQLite + `rusqlite`
+- 项目性质：单机版订单管理系统
+- 当前阶段：开发期，数据库结构变化时可直接删除本地 SQLite 重建，不需要复杂历史迁移兼容
+- 开发期数据库口径：不新增迁移文件，结构变更直接维护当前初始化 SQL；本地数据库删库重建，避免留下废弃表名、键名
+
+## 业务模块
+
+已完成或基本可用：
+
+- 客户管理：客户名称、手机、地址、默认计价方式、含税/不含税下的断桥/喷涂/坯料/氧化/电泳加工费；新增、编辑、删除、搜索、分页、批量导入、批量导出。
+- 商品管理：商品名称、模具编号、厚度、米重；新增、编辑、删除、批量导入、批量导出、批量分配客户。
+- 订单管理：新建、编辑、保存、下单、删除、列表搜索筛选、导出 CSV。
+- 订单打印：A4 横向销售订单，先预览再打印。
+- 数据备份：数据库路径显示、备份、恢复。
+- 库存管理第一版：库存列表、入库、出库、盘点、库存流水。
+- 订单库存管理：订单下单后生成订单库存明细，操作员按订单入库、调整、出库。
+- 客户历史库存管理：录入系统使用前已经属于客户、但尚未发货的库存批次，并可按客户库存创建出库单。
+- 出库单打印：按订单创建出库单，支持预览、打印、补打。
+- 铝型材按单生产：客户确认下单后，车间才安排生产，下单本身不扣公共库存。
+
+## 重要业务规则
+
+- 新建订单客户必须从客户列表选择，选择后自动带出客户名称和地址。
+- 订单页面不录入客户手机，手机只保存在客户资料中。
+- 商品资料是全局商品库，导入商品时不需要客户 ID。
+- 商品通过 `customer_products` 分配给客户，同一个商品可以分配给多个客户。
+- 新建订单选择客户后，明细只能选择已分配给当前客户的商品。
+- 新建订单页如果客户列表为空，客户选择框只显示红色“请先添加客户”，不使用红边框。
+- 新建订单页如果已选客户但该客户没有归属商品，明细商品选择框显示红色“请先添加客户商品”，不弹窗。
+- 商品批量选择只服务于“分配客户”，不再提供批量删除或清空商品。
+- 商品批量选择按当前筛选结果跨页选择，分页和每页数量只影响显示，不影响选择范围。
+- 商品筛选条件变化时自动清空原选择；切换分页或每页数量不清空选择。
+- 商品资料支持按当前筛选结果批量导出 CSV，导出字段为商品名称、模具编号、厚度、米重、归属客户。
+- 商品选择后自动填充模具编号、厚度、米重。
+- 订单明细必填：商品、长度、颜色、数量。
+- 订单明细颜色分类规则：颜色包含“坯料”为坯料；颜色包含“双面”或同时包含“外”和“内”为断桥；颜色包含“氧化”为氧化；颜色包含 `1#色`、`2#色` 或 `3#色` 为电泳；均不命中时为喷涂。出库单创建会拦截同时命中多个分类的颜色。
+- 经手人必填。
+- 订单状态：`editing`、`saved`、`ordered`。
+- 保存后再次修改会回到未保存状态，离开页面前应提醒。
+- 新建订单使用前端内存里的草稿快照判断未保存状态；快照不存数据库。
+- 打开新建订单页时建立初始快照，之后用当前表单和快照对比判断是否改动。
+- 修改下单日期也算改动，会进入未保存状态。
+- 新建订单下单日期默认使用本地当天；保存和下单都会提交页面上的下单日期，新订单编号 `ALUyyyyMMddNNN` 的日期也优先使用该页面下单日期。
+- 新建订单明细数量默认空，不默认填 `1`，避免输入时需要先删除。
+- 新建/编辑订单支持批量导入订单明细，文件格式支持 CSV、XLSX、XLS；模板字段为：商品名称、长度(mm)、颜色、数量、备注。
+- 订单明细导入必须先选择客户，只按当前客户已分配商品精确匹配商品名称；导入文件不填写模具编号，匹配后自动带出模具编号、厚度和米重。
+- 订单明细导入会预览并校验必填项、长度/数量正整数，以及“商品名称 + 长度 + 颜色”在当前订单内不能完全重复；导入后写入当前草稿并进入未保存状态。
+- 新建/编辑订单顶部只放保存、下单、打印和返回等主流程动作；订单明细卡片右上角放下载模板、导入明细、导出明细和添加商品。
+- 新建/编辑订单明细提供“按颜色整理”按钮，手动将首尾去空格后完全相同的颜色排在一起；颜色组按首次出现顺序排列，组内保持原顺序，不修改字段内容。录入、修改颜色和导入时不自动重排；保存、重新打开、导出和打印沿用整理后的明细顺序，已下单订单不可整理。前端根据当前明细顺序判断是否需要整理，无需整理、少于两条明细或已下单时按钮禁用并提供悬停说明；整理成功显示居中偏上的绿色结果提示框，提醒保存订单，4 秒自动关闭，也支持手动关闭，不挤动表格。
+- 新建/编辑订单明细底部统计按顺序显示：商品数量、断桥/喷涂/坯料/氧化/电泳中非 0 类别支数、数量合计、理论重量合计；类别支数不显示额外标题。
+- 新建订单铝锭价必填，且必须大于 `0`；页面红色星号和提交校验保持一致。
+- 新建订单点“下单”成功后会刷新/预取库存数据，避免进入库存页后不点刷新看不到订单库存。
+- 新建/编辑订单点“保存”成功后跳回订单列表；点“下单”成功后跳到库存页，库存页默认展示订单库存。
+- 已下单订单不可编辑。
+- 已下单订单不可删除，避免库存已扣减后订单凭据丢失。
+- 商品删除规则：
+  - 商品删除采用软删除，写入 `products.deleted_at` 并移除客户归属。
+  - 商品列表、客户归属和新建订单可选商品只读取未删除商品。
+  - 已有订单、库存和出库单继续保留商品快照或历史引用。
+- 客户删除规则：
+  - 有未下订单引用时不能删除。
+  - 已下单订单保留客户快照。
+- 库存页默认打开“订单库存”，选项卡顺序为：订单库存、公共库存、库存流水。
+- 下单后会为订单明细初始化订单库存，数量默认为 `0`。
+- 订单库存按订单分组显示，左侧订单卡片，右侧显示当前订单库存明细。
+- 订单库存明细匹配维度为：订单号、商品、长度、颜色。
+- 业务表达中的“同商品”按模具编号理解；当前数据层用 `product_id` 匹配，因为商品资料中的模具编号唯一且绑定到唯一商品。
+- 订单库存支持逐行入库、出库、调整，也支持“批量入库”；批量入库表示本次新增入库数量，允许超入库，不按目标库存覆盖。
+- 批量入库弹窗中，未入满时显示“建议入库 X 支”，已入齐和超入库也仍允许继续录入；是否超入库只作为状态提示。
+- 订单批量入库支持图片识别入库：
+  - 前端在批量入库弹窗中支持多张图片选择、图片预览、旋转、重复路径跳过、识别结果预览和一键应用。
+  - 多图识别时，前端按单张图片内部去重，跨图片同一订单行会在一键应用时累加支数；部分图片识别失败时保留成功图片结果，并逐张提示失败原因。
+  - 图片长度识别后先按毫米换算；若识别值比订单明细长度只大 10mm 以内，且没有精确长度命中，则自动吸附到该订单长度，例如 `6.01` 识别为 `6010` 后可匹配订单 `6000`，但 `6.05` 会保留为 `6050`。
+  - 识别结果先用当前订单的模具编号白名单确认型号，再按长度和颜色组匹配订单库存明细；入库图片颜色中的“白/灰/坯料”与订单颜色做分组匹配。
+  - 入库图片长度按毫米/米自动换算；订单库存长度为毫米，业务展示可按需要格式化。
+  - OCR 展示的“原文”只展示型材型号、颜色、长度、支数四列，不展示重量、单价、金额、运费等干扰字段。
+  - 后端 OCR 不直接模糊改写型号原文；前端只在当前订单模具编号唯一命中时，用订单白名单处理数字相邻的 `O/0` 易混识别并按订单真实模具编号展示和匹配。
+  - 坯料不走特殊支数规则，坯料和普通行都应按同一支数规则读取；`4支`、`4 支` 和落在支数列里的纯数字都可识别，重量/单价列不能被当作支数。
+  - 当前后端使用 macOS Vision 做 OCR，关闭语言纠错以减少型号 `0/O` 被错误联想；先按图片表格线裁剪表格区域，再按表头位置推导列边界读取型材型号、颜色、长度、支数。
+  - 后端会跑完表格主区域和完整表格等裁剪结果后合并去重，不再第一块裁剪图有结果就提前返回；合并按规范化模具编号、颜色、长度识别同一行，优先保留支数更完整的结果。
+  - 针对 `000.png`/`555.png` 中最后一行 `4支` 在整表 OCR 中丢块的问题，后端在表头定位后会单独裁剪“支数”列、放大后再次 Vision OCR，再按行 y 坐标只回填缺失支数；不会覆盖已识别支数，也不会从重量/单价/金额列猜支数。
+- 公共库存按模具编号/商品、长度、颜色三项共同区分，缺一不可。
+- 订单库存里的“公共库存可转”必须匹配同模具编号/商品、同长度、同颜色三项。
+- 公共库存只允许从现有公共库存行进入调整弹窗；调整类型为可选的“入库 / 出库 / 盘点”。
+- 公共库存出入库、盘点都按当前行的模具编号/商品、长度、颜色写入库存流水。
+- 公共库存可转入订单库存；公共库存和订单库存都写入库存流水，流水保留订单号、出库单号、长度和颜色。
+- 客户历史库存独立于公共库存和订单库存，用于补录系统使用前客户仓库中确实存在且尚未发货的库存；这类库存没有本系统订单，因此不能混入公共库存或订单库存。
+- 客户历史库存按批次保存客户、历史下单日期、历史单号、铝锭价、计价方式、断桥/喷涂/坯料/氧化/电泳加工费和备注快照；历史下单日期可为空，允许一个批次代表多个系统外历史订单。
+- 客户历史库存批次号规则为 `客户名称拼音首字母-YYYYMMDDNNN`，例如 `KH-20250501001`；日期使用历史下单日期，流水号按同一客户首字母和同一日期从 `001` 递增。
+- 客户历史库存列表操作栏提供查看/修改入口；未出库批次可修改客户、价格、备注和明细，已生成出库单的批次只能查看，不能修改；即使批次已全部出完，也保留查看批次入口，便于查看商品明细和该批次全部出库单。
+- 客户历史库存列表操作栏只显示当前可用动作，不显示禁用图标；有剩余库存时显示出库入口。出库单的预览/补打统一放在独立的“客户库存出库单”区域，不再挂在批次列表或批次查看弹窗里。
+- 新增客户历史库存时，商品明细只能选择当前客户已分配商品；前端禁止未选客户时聚焦商品选择，后端也校验商品必须属于当前客户。
+- 新增客户历史库存时，加工费输入项根据当前批次明细颜色命中的分类动态显示并标注必填；前后端只校验实际出现分类对应的加工费，未出现分类允许为空并按 `0` 保存到快照。
+- 新增客户历史库存商品明细底部统计与新建订单一致，商品数量后直接显示非 0 类别支数，再显示数量合计和理论重量合计。
+- 新增客户历史库存时，批次备注参与客户特殊计价关键词匹配，逻辑与新建订单备注一致；界面显示“已匹配特殊计价”提示，并按客户普通/特殊、含税/不含税价格组自动带出加工费，但最终保存批次价格快照，允许人工修正。
+- 客户历史库存出库允许自定义每行出库数量，数量可小于当前库存；出库时必须填写经手人，出库后扣减客户库存，不转入公共库存。
+- 客户历史库存出库单复用现有出库单打印展示，按批次价格快照、实际出库数量和实际过磅重量计算货款；打印信息区“批次”直接显示客户库存批次号，计价方案显示出库时生效的默认价或特殊关键词价；同一批次允许多次部分出库并按批次号生成多张出库单，例如 `YZHZ-20260618001-01`、`YZHZ-20260618001-02`。
+- 客户历史库存出库单明细支持“分组”列；出库弹窗按批次提供分组输入，同一批次只需填写一次并应用到该批次出库明细。批次卡片上方继续显示完整批次备注；未手动填写分组时，默认取批次备注第一个英文/中文逗号之后、第二个英文/中文逗号之前的内容，只有一个逗号时取逗号后的剩余内容；没有第一个逗号或中间内容为空时，该批次分组必填。
+- 客户历史库存合并出库允许选择同一客户下不同价格快照的批次；保存时生成一张客户库存出库单，单内按铝锭价、计价是否含税、断桥/喷涂/坯料/氧化/电泳加工费拆成多个计价方案。每个价格组独立录入重量和额外收费，重量输入支持回车跳到下一个必填重量，再进入出库明细数量。
+- 查看客户历史库存时会按批次 ID 重新读取最新批次详情，避免列表缓存导致剩余库存显示滞后；批次查看弹窗只保留批次和商品明细，不再承载出库单列表。
+- 客户库存页新增独立“客户库存出库单”区域，用于统一查看和补打单张/合并客户库存出库单，支持按出库单号、客户、批次和经手人检索后展示。
+- 已出库批次的商品明细为只读；只有剩余数量大于 0 的明细行显示“盘点剩余库存”入口。盘点只调整当前剩余库存并写入客户库存流水，不修改已生成的出库单。
+- 客户库存页签内展示“客户库存流水”区域，读取 `customer_inventory_movements`，用于查看客户历史库存补录、出库和盘点记录；不混入公共/订单库存的“库存流水”页签。
+- 客户库存支持按客户打印全部当前剩余库存：打印入口不受页面搜索条件影响，预览时通过只读接口重新读取该客户所有数量大于 `0` 的批次和明细；历史下单日期及完整价格快照（铝锭价、计价方式和五类加工费）均相同的批次合并到同一表格，同日异价批次自动拆表，历史日期为空的批次各自独立成表，不同批次不合并相同商品。每个表格显示铝锭价、计价方式及金额大于 `0` 的加工费，不显示零加工费；表格末列按批次纵向合并显示“分组”，默认取批次备注第一个中英文逗号后的全部内容，无逗号时取完整批次备注，备注为空时回退批次号，预览前允许人工修改且不限制字符数；打印单元格完整显示自动换行的分组名，不使用省略号，也不重复批次号和小计；备注列上下左右居中并保持单行，不因长备注增加行高；每个日期表显示分类和库存小计，最后一页显示全部库存总计。打印为 A4 纵向实时清单，不保存打印记录，也不显示重量或货款。预览会使用与打印一致的宽度、字体和 CSS 隐藏测量实际高度，再按 A4 可用高度分页；表格不拉伸，同一批次分组作为不可拆分单元，当前页放不下时整组移到下一页并允许上一页自然留白。单个批次分组在空白 A4 仍放不下时阻止预览和打印，返回分组设置并显示包含批次号、分组名和明细数的错误；末页总计放不下时允许单独进入下一页，不误报分组超高。
+- 当前订单库存区域显示“当前订单流水”，独立读取该订单全部流水，不受全局库存流水最近 50 条限制。
+- 出库单与订单为一对多；同一订单可分批创建多张出库单，单号按 `订单号-01`、`订单号-02` 递增。
+- 新建出库单时可选择计价方式，默认沿用订单计价方式；切换后按客户资料中对应的含税/不含税加工费写入出库单快照；订单备注命中客户特殊计价关键词时使用特殊计价。
+- 订单库存新建出库单时，出库单备注默认截取订单整体备注第一个中/英文逗号之后的全部内容并去除首尾空格；没有逗号、逗号后为空或订单备注为空时保持出库单备注为空。订单明细备注仍只复制到对应出库明细。
+- 出库单支持独立“特殊提示”：订单库存单张出库单、客户库存单张/合并出库单新建时可填写并保存；订单库存合并打印单可在合并弹窗填写，仅用于本次预览/打印不落库。打印预览中可直接编辑特殊提示并实时查看纸面效果；订单库存单张出库单和客户库存单张/合并出库单可点“保存提示”写回对应出库单主表，订单库存合并临时打印单只影响本次预览/打印。特殊提示与现有出库单备注完全独立，不复制、不拼接、不兜底、不参与计价、分组、库存流水、特殊计价关键词或备注默认值逻辑。
+- 第一次创建出库单后订单库存写入锁定状态：禁止继续入库、调整和公共库存转入，但只要订单库存未完结且仍有余额，就允许继续创建出库单。
+- 订单库存新建出库单时，出库明细数量默认空；可点“全部出库”按当前库存填满，也可点“清空”清除已填数量。部分出库后未出数量继续留在订单库存，不自动转公共库存。
+- 首次出库后可手动一次性把全部剩余订单库存转入公共库存或客户库存；转移成功后订单库存清零并完结，不能继续出库。
+- 剩余转客户库存会创建带 `source_order_id` 的客户库存批次，并复制订单日期、订单号、铝锭价、计价方式、五类加工费、商品规格和订单整体备注快照；弹窗中的操作备注只写入流水，不替代批次备注，保证“虎标膜”等特殊计价关键词继续生效。订单侧写 `transfer_customer`，客户库存侧写 `transfer_order` 流水。
+- 出库前状态不单独保存快照；出库单明细记录本次出了哪些、出了多少，库存流水记录出库前数量、出库后数量和变动数量。
+- 订单列表和订单库存左侧卡片都显示订单是否已出库。
+- 销售订单打印上方订单信息区对齐出库单：三列展示客户名称、下单日期、订单编号、经手人、铝锭价、计价方式和客户地址，信息区下方有分隔线；未下单保存单的下单日期显示“客户未确认下单”，客户地址在第一列、保存日期在第二列、第三列留空。
+- 销售订单打印明细表底部显示支数统计：商品总数、断桥/喷涂/坯料/氧化/电泳支数和数量合计。
+- 销售订单打印表格下方显示“理论预估重量”统计，按断桥/喷涂/坯料/氧化/电泳分组并显示理论预估重量合计；避免与出库单实际过磅重量混淆。
+- 销售订单打印多页时由前端显式分页，每页 22 条明细；每页重复抬头、订单信息和表头，只有最后一页显示支数统计、理论预估重量、备注和客户签收。
+- 销售订单打印预览按多张 A4 横向纸张展示，避免多页内容挤在同一张预览纸内；系统打印页边距为上 8mm、左右 8mm、下 5mm。
+- 出库单打印为 A4 纵向；打印单只显示订单编号，不再单独显示重复的出库单号。
+- 出库单打印多页时由前端显式分页，每页 36 条明细；每页重复抬头、出库信息和表头，只有最后一页显示数量统计、重量、货款、备注、客户签收和发货人。
+- 出库单特殊提示只在填写后显示，位置固定在整个出库单备注下面、客户签收/发货人上面，并与备注保持约两行间隔；打印纸面不显示“特殊提示”等标题，只用独立边框、浅底色、与出库单标题主字号一致的加粗文字展示输入内容本身。特殊提示与下方客户签收/发货人/页码/打印时间行保持约三行间隔。预览输入为空或清空保存后，打印纸面完全不渲染特殊提示，也不占空行；现有备注显示保持原样。
+- 出库单打印预览按多张 A4 纵向纸张展示，系统打印页边距为上 8mm、左右 8mm、下 6mm；系统打印时外层出库单容器宽 `194mm`，内层 `.print-delivery-note` 宽 `190mm` 并居中，避免 macOS 打印预览/实际打印裁掉表格右侧竖线。
+- 桌面端打印命令支持传入方向：销售订单调用横向 `landscape`，出库单调用纵向 `portrait`，避免 macOS 系统打印窗口方向和页面版式不一致。
+- 合并出库单只在前端生成打印用合并单，不新增数据库表；当前用于同一客户多张已出库订单合并打印。
+- 合并出库单按铝锭价、计价是否含税、断桥/喷涂/坯料/氧化/电泳加工费快照分价格组：同价同费为一组，不同价格拆成多个计价方案。
+- 同一价格组内明细不合并行，避免价格、来源和数量语义混乱；如果同价组包含两张或以上出库单，则必须填写短分组说明，并在明细表备注后显示分组列，分组列按同组明细合并单元格显示。
+- 订单库存合并出库单勾选单张出库单时，“分组说明”默认同步该出库单的整单备注；已人工填写或清空的分组说明不被异步读取结果覆盖，出库单备注为空时仍沿用同价多单分组必填校验。
+- 客户库存合并出库单的明细“分组”列复用订单库存合并出库单带分组时的列宽；客户库存明细的 `groupLabel` 会映射为合并单分组，保证单张客户库存出库单和合并客户库存出库单的分组口径一致。
+- 合并出库单只有一个价格组时，明细下方统计和单张出库单保持一致；多个价格组时，每个价格组保留独立明细表、数量统计、铝锭价、型材货款明细和其他费用小计，移除“本组应收小计”但保留价格组付款区底部横线；最后将合并总数量、合并总重量、型材货款合计和非零其他费用合计放在同一行，下方显示合并应收大写/小写。
+- 多价格组合并出库单的打印分页按物理页估算可用空间，同一页可顺接多个价格组，避免价格组较短时整页底部留白；每个价格组仍保留独立明细表和统计块，最终合并统计只在整张合并单最后显示。
+- 订单明细备注会携带到出库单明细；浏览器 fallback 和 Rust 后端保持一致。
+- 出库单出库时必须按本次出库明细填写对应重量：
+  - 颜色包含“坯料”的出库行要求坯料重量。
+  - 颜色包含“双面”或同时包含“外”和“内”的出库行要求断桥重量。
+  - 颜色包含“氧化”的出库行要求氧化重量。
+  - 颜色包含 `1#色`、`2#色` 或 `3#色` 的出库行要求电泳重量。
+  - 其他有出库数量的行要求喷涂重量。
+  - 同一出库单出现多类时，对应多类重量都必填；重量为 0 的项不在打印统计里显示。
+- 新建出库单录入重量时，重量错误提示复用输入框 placeholder 位置，避免错误出现时改变弹窗布局；重量输入框再次获得焦点时清空对应错误。
+- 出库单明细打印显示下单数量和出库数量；数量类统计放在表格底部，重量统计放在表格下方。
+- 出库单货款按出库时录入的实际过磅重量计算；按断桥、喷涂、坯料、氧化、电泳分别使用对应实际重量和加工费，乘以订单/出库单快照中的 `铝锭价 + 对应加工费`，其中价格为元/吨，重量为 kg，计算时需要除以 1000 做 kg 到吨的单位换算；打印时显示分品类货款、货款大写和货款小写。
+- 出库单支持额外收费项：新建出库单时可填写收费名称和收费金额；收费名称为空则不显示也不计入应收合计，填写名称时金额必须大于 0。额外收费保存到出库单快照，打印时与型材货款明细分区显示，并计入应收合计大写/小写。订单出库单和客户历史库存出库单都使用同一口径。
+
+## 数据模型口径
+
+- 商品资料：
+  - `product_name`：商品名称，例如 `70 边框（1.15）-- 外`
+  - `mold_code`：模具编号，例如 `G5501`
+  - `thickness_mm_x100`：厚度，单位 mm，数据库用整数保存两位小数
+  - `weight_per_meter_kg_x1000`：米重，单位 kg/m，数据库用整数保存三位小数
+- 客户商品关系：
+  - `customer_products`：客户与商品的多对多关系表
+  - 一个商品可以分配给多个客户
+  - 一个客户可拥有多个可下单商品
+- 客户资料：
+  - `customer_name`
+  - `phone`
+  - `customer_address`
+  - 含税加工费：`bridge_processing_fee_tax_included_x100`、`powder_processing_fee_tax_included_x100`、`billet_processing_fee_tax_included_x100`、`oxidation_processing_fee_tax_included_x100`、`electrophoresis_processing_fee_tax_included_x100`
+  - 不含税加工费：`bridge_processing_fee_tax_excluded_x100`、`powder_processing_fee_tax_excluded_x100`、`billet_processing_fee_tax_excluded_x100`、`oxidation_processing_fee_tax_excluded_x100`、`electrophoresis_processing_fee_tax_excluded_x100`
+  - 加工费单位元，数据库用整数保存到分
+  - 不要求 10 项全部填写；默认计价对应的价格组至少设置一项，未设置的分类在列表里显示“未设置”
+  - 客户资料支持批量导入/导出，普通计价导入模板字段为客户名称、手机、客户地址、默认计价、含税/不含税各五项加工费；特殊计价关键词和特殊含税/不含税各五项加工费为可选导入导出列
+- 订单：
+  - `customer_id`
+  - 客户名称快照
+  - 客户地址快照
+  - 经手人
+  - 铝锭价快照 `aluminum_ingot_price_x100`
+  - 计价是否含税快照 `pricing_tax_included`
+  - 加工费快照 `bridge_processing_fee_x100`、`powder_processing_fee_x100`、`billet_processing_fee_x100`、`oxidation_processing_fee_x100`、`electrophoresis_processing_fee_x100`，根据订单计价是否含税和订单备注是否命中特殊计价关键词，从客户普通/特殊价格组中保留一组；Rust 内部使用 `ProcessingFeeSnapshot` helper 收敛五类字段取值和校验
+  - 订单编号
+  - 下单日期 `ordered_date`
+  - 状态
+  - 备注
+- 库存：
+  - `inventory_stocks` 保存公共库存，主键为 `(product_id, length_mm, color)`
+  - `order_inventory_stocks` 保存订单绑定库存
+  - `inventory_movements` 保存公共库存、订单生产、发货和转公共库存流水，保留 `order_id`、`delivery_note_id`、`length_mm`、`color`
+  - `delivery_notes` 保存出库单主表，`id` 等于订单号，`order_id` 唯一；保留客户、经手人、铝锭价、计价是否含税、断桥/喷涂/坯料/氧化/电泳加工费和重量等快照
+  - `delivery_notes.special_note` 保存订单出库单独立特殊提示，空值打印不显示，不影响 `note` 备注字段
+  - `delivery_note_items` 保存出库单明细，记录本次出库商品、长度、颜色、下单数量、出库数量和备注；不保存订单理论预估重量
+  - `inventory_movements.delivery_note_id` 关联出库单，用于追踪发货和剩余转公共库存流水
+- `customer_inventory_batches` 保存客户历史库存批次，保留客户快照、历史下单日期/单号、铝锭价、计价方式、五类加工费和备注快照；批次号为 `客户名称拼音首字母-YYYYMMDDNNN`
+- `customer_inventory_stocks` 保存客户历史库存明细，按批次记录商品、模具编号、长度、颜色、当前库存数量和备注
+- `customer_inventory_movements` 保存客户历史库存补录和出库流水，保留客户、批次、库存明细、出库单号、规格和数量变化
+  - `customer_inventory_delivery_notes`、`customer_inventory_delivery_note_price_groups` 和 `customer_inventory_delivery_note_items` 保存客户历史库存出库单、计价方案及明细；主表保留客户、经手人和出库日期等共同信息，计价方案表保留出库重量、价格快照、计价方案名称和特殊计价触发关键词快照，明细归属具体计价方案；单批次出库单号使用 `批次号-两位流水` 格式，同一批次从 `-01` 递增，例如 `YZHZ-20260618001-01`；合并出库单使用 `客户拼音首字母-CKYYYYMMDD-两位流水` 格式，例如 `YZHZ-CK20260626-01`；价格组和明细内部 ID 继续使用三位流水，例如 `YZHZ-CK20260626-01-PG-001`、`YZHZ-CK20260626-01-001`
+  - `customer_inventory_delivery_notes.special_note` 保存客户库存出库单独立特殊提示，空值打印不显示，不影响 `note` 备注字段；订单库存和客户库存出库单分别通过独立更新命令只更新 `special_note` 和 `updated_at`
+
+## 关键文件
+
+- 数据库初始化：`/Users/jnhxf/projects/r/order-manager/src-tauri/src/db/migrations/001_init.sql`
+- Tauri 初始化：`/Users/jnhxf/projects/r/order-manager/src-tauri/src/db.rs`
+- 后端命令：
+  - `/Users/jnhxf/projects/r/order-manager/src-tauri/src/commands/orders.rs`
+  - `/Users/jnhxf/projects/r/order-manager/src-tauri/src/commands/products.rs`
+  - `/Users/jnhxf/projects/r/order-manager/src-tauri/src/commands/customers.rs`
+  - `/Users/jnhxf/projects/r/order-manager/src-tauri/src/commands/inventory.rs`
+  - `/Users/jnhxf/projects/r/order-manager/src-tauri/src/commands/files.rs`
+- 订单页：
+  - `/Users/jnhxf/projects/r/order-manager/src/features/orders/pages/orders-page.tsx`
+  - `/Users/jnhxf/projects/r/order-manager/src/features/orders/pages/order-form-page.tsx`
+  - 订单明细导入解析命令：`parse_order_item_import_file`
+- 客户页：`/Users/jnhxf/projects/r/order-manager/src/features/customers/pages/customers-page.tsx`
+- 商品页：`/Users/jnhxf/projects/r/order-manager/src/features/products/pages/products-page.tsx`
+- 库存页：`/Users/jnhxf/projects/r/order-manager/src/features/inventory/pages/inventory-page.tsx`
+- 打印组件：`/Users/jnhxf/projects/r/order-manager/src/features/orders/components/print-order-view.tsx`
+- 出库单打印组件：`/Users/jnhxf/projects/r/order-manager/src/features/inventory/components/print-delivery-note-view.tsx`
+- 统一标题组件：`/Users/jnhxf/projects/r/order-manager/src/components/section-heading.tsx`
+- 弹窗基础组件：`/Users/jnhxf/projects/r/order-manager/src/components/ui/dialog.tsx`
+- 浏览器/Tauri 运行时和 localStorage helper：`/Users/jnhxf/projects/r/order-manager/src/lib/browser-runtime.ts`
+- 颜色分类和类别支数统计工具：`/Users/jnhxf/projects/r/order-manager/src/lib/processing-fees.ts`
+- 试用版发布检查清单：`/Users/jnhxf/projects/r/order-manager/docs/release-checklist.md`
+- 桌面验收脚本：`/Users/jnhxf/projects/r/order-manager/scripts/desktop-acceptance.mjs`
+- 桌面验收脚本文档：`/Users/jnhxf/projects/r/order-manager/docs/desktop-acceptance.md`
+- 真实库命令行备份脚本：`/Users/jnhxf/projects/r/order-manager/scripts/backup-real-db.mjs`
+- 真实库命令行恢复脚本：`/Users/jnhxf/projects/r/order-manager/scripts/restore-real-db.mjs`
+- 试用快速说明：`/Users/jnhxf/projects/r/order-manager/docs/trial-user-guide.md`
+- 试用导入模板包：`/Users/jnhxf/projects/r/order-manager/docs/trial-kit/`
+
+## 最近重点改动
+
+- 出库单打印预览支持直接编辑独立特殊提示：预览输入框实时更新 A4 纸面和本次打印内容；订单库存单张出库单保存到 `delivery_notes.special_note`，客户库存单张/合并出库单保存到 `customer_inventory_delivery_notes.special_note`，保存时裁剪首尾空格并只更新特殊提示；订单库存合并打印单保持临时预览/打印，不显示保存按钮。配套验证：`node tests/node/test-inventory-utils.mjs`、`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run typecheck`、`CI=true pnpm run check:rust`。
+- 所有出库单新增独立特殊提示：订单出库单与客户库存单张/合并出库单主表新增 `special_note`，前端 payload/type、Rust 创建/读取、浏览器 fallback 和打印对象统一为 `specialNote`；新建订单出库单、客户库存出库单和订单合并打印弹窗均新增“特殊提示”输入。打印时特殊提示只在填写后显示在现有备注下面，不显示标题，使用独立边框浅底加粗块；未填写时完全不渲染，现有出库单备注逻辑、备注默认值、计价、分组、流水和特殊计价关键词均不变。配套验证：`node tests/node/test-inventory-utils.mjs`、`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run check`、`CI=true pnpm run check:rust`、`git diff --check`。
+- 库存页客户库存批量导入预览状态继续清理：文件选择、解析成功、解析失败、导入失败和清空预览的 fileName/rows/errors 状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts`，`inventory-page.tsx` 继续负责 Tauri 文件选择、mutation reset、提交和 query invalidation 副作用；解析回调按 mutation 文件路径推导文件名，避免依赖异步 setState 后的旧值。配套验证：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run typecheck`、`CI=true pnpm run build`、`git diff --check`。
+- 订单库存与客户库存的多计价合并出库单已统一精简最终统计：每个价格组移除“本组应收小计”，价格组付款区 `1px` 底部横线继续保留；最终统计把合并总数量、合并总重量、型材货款合计和非零其他费用合计放在同一行且不越出打印容器，下方只保留合并应收大写/小写。清理了已失效的 `showSubtotal` 参数及合并应收区冗余 CSS；两类合并单继续共用 `PrintMergedDeliveryNoteView`。配套验证：定向 UI 1/1、全量 UI 9/9、`CI=true pnpm run check:all`（含生产构建、Rust fmt/Clippy、128 个 Rust 单测和 5 个 Excel 集成测试）、`git diff --check`。
+- 订单库存合并出库单的“分组说明”已默认同步对应单张出库单的整单备注：打开合并弹窗时同步当前预选单，勾选其他出库单时按单异步读取备注；只补尚未初始化的分组字段，人工修改或主动清空后不被覆盖。生成预览时再次以相同规则补齐尚未返回的异步默认值，避免快速点击造成竞态；空出库单备注仍沿用同价多单分组必填校验。配套验证：工具单测覆盖默认同步、人工值和人工空值不覆盖，定向 UI 1/1、全量 UI 9/9、`CI=true pnpm run check`（含生产构建）、`git diff --check`。
+- 订单库存新建出库单会读取订单整体备注并生成默认备注：Rust 库存查询和浏览器 fallback 使用独立 `orderNote`，与原有订单明细 `note` 分离；打开新建出库单弹窗时，默认截取订单备注第一个中/英文逗号之后的全部内容并裁剪首尾空格，没有逗号、逗号后为空、空字符串或历史 `NULL` 时保持空白，最终仍通过现有出库单 payload 保存为快照。Rust 查询使用 `COALESCE(orders.note, '')` 兼容真实库中历史 `NULL` 备注，不修改数据库原值。工具单测覆盖中文/英文逗号、保留后续逗号、无逗号和空尾段，Playwright 覆盖截取结果带入/打印及无逗号不复制。配套验证：定向 UI 2/2、全量 UI 9/9、`CI=true pnpm run check`（含严格类型检查、前端全套规则测试和生产构建）、`git diff --check`。
+- 出库单打印金额版式已拆分型材货款与其他费用：单张订单/客户库存出库单和合并出库单共用 `DeliveryPaymentBreakdown`，型材货款小计显示在品类明细下方，其他费用使用与货款明细相同的浅底色标题/内容结构并显示真实名称、金额和其他费用小计；两个明细区块不显示横线，付款区保留应收合计下方横线，应收合计大写/小写整行禁止换行。多计价合并单不再显示各价格组“本组应收小计”，但保留每组付款区底部横线；最终把合并总数量、合并总重量、型材货款合计和其他费用合计放入同一行，下方只显示合并应收大写/小写。订单库存合并单和客户库存持久化多计价合并单都进入同一 `PrintMergedDeliveryNoteView`，金额计算、额外收费快照和数据库结构不变。
+- 客户库存打印页脚已与销售订单、出库单统一为自然文档流：移除客户库存纸页专属的纵向 flex 和页脚 `margin-top: auto`，`客户确认 / 制表人 / 页码 / 打印时间` 现在紧跟当前页最后一块内容，不再固定沉到纸张底部；页脚文字和分页测量中的高度预留保持不变。Playwright 多页客户库存用例从“距纸底不超过 28px”改为断言页脚紧随前一内容块，并继续验证 79 行完整、页面不超 A4、批次不拆分和总计分页。配套验证：`node tests/node/test-inventory-utils.mjs`、定向 Playwright 1/1、`CI=true pnpm run check`、`git diff --check`。
+- 所有出库单明细表“备注”列已统一水平居中：`src/assets/index.css` 在共享的 `.print-delivery-note__table` 第 8 列规则中增加 `text-align: center`，同时覆盖订单单张/合并出库单和客户库存单张/合并出库单；表格下方整单备注区域保持原排版。Playwright 分别对订单出库预览和客户库存出库预览补充浏览器计算样式断言。配套验证：两条定向 UI 用例 2/2 通过、`CI=true pnpm run build` 和 `git diff --check` 通过。
+- 已删除客户的已下单订单仍可继续履约：Rust 出库查询把订单 `customer_id` 改为可空引用，客户资料已删除时继续使用订单保存的客户、地址和同计价方式加工费快照创建出库单，也允许首次出库后的剩余库存转入公共库存；转入客户库存因目标客户实体已不存在会明确返回“订单客户不存在”。`transfer_order_inventory_remainder` 同步补齐稳定业务错误码，Rust 与浏览器 fallback 均增加回归覆盖。配套验证：`pnpm run check:all`（前端检查/构建、Rust Clippy、127 个单测和 5 个 Excel 集成测试）及 `git diff --check`。
+- 剩余订单库存转入客户库存时，客户库存批次 `note` 复制原订单整体备注，保留“虎标膜”等特殊计价关键词；弹窗操作备注只写订单侧 `transfer_customer` 和客户库存侧 `transfer_order` 流水，不再覆盖批次业务快照。Rust 桌面端与浏览器 fallback 已对齐，fallback 回归同时断言批次完整备注与两侧流水操作备注。
+- 客户库存出库“批次分组”默认规则已改为取批次备注第一个中/英文逗号之后、第二个中/英文逗号之前的内容；只有一个逗号时取其后剩余内容，无第一个逗号或中段为空时要求手填。批次卡片上方仍使用完整批次备注。前端默认提示、提交组装、浏览器 fallback 和 Rust 后端兜底保持一致。
+- 订单多次出库单号生成已清理为按当前最大数字尾号递增，不再按已有记录数量递增；因此历史存在 `-01`、`-03` 时下一张稳定生成 `-04`，不会覆盖已有出库单。Rust 与浏览器 fallback 均补断号回归测试。
+- 本批改动提交前已通过 `pnpm run check:all`：前端类型检查、全部脚本回归、生产构建、Rust `fmt/clippy`、125 个库单元测试和 5 个真实 Excel 集成测试全部成功；Playwright 全量 8/8 通过，其中客户库存出库烟测明确断言完整批次备注保持显示、默认分组取第一和第二个逗号之间的内容；`git diff --check` 通过。
+- 订单库存多次分批出库与手动完结已完成：数据库新增 `orders.inventory_locked_at/inventory_closed_at/inventory_close_destination`、`customer_inventory_batches.source_order_id` 和两类转客户流水；移除 `delivery_notes.order_id` 唯一索引。同一订单首次部分出库后余额保留、入库/调整/公共转入锁定、第二张及后续出库单继续可建；余额可手动转公共或客户库存，转移后完结。订单列表、库存页、多张补打、合并打印、Rust/浏览器 fallback 和桌面验收脚本均已同步。
+- 本轮明确不兼容旧数据库、不做迁移。旧结构数据库与旧 App 已归档到 `/private/tmp/order-manager-pre-multi-delivery-20260716220000/`，归档库完整性 `ok`，包含客户 4、有效商品 72、订单 3。真实库已删除重建为新结构并在验收数据回收后再次重建为空库；最终客户/商品/订单/出库单/客户库存均为 0，`PRAGMA foreign_key_check` 无结果，`integrity_check=ok`。
+- 本轮 release 实机验收订单为 `ALU20260716001`：订单入库 6 支，`-01` 出 2 支/喷涂重量 20 kg，`-02` 出 1 支/喷涂重量 10 kg，剩余 3 支手动转客户库存；订单侧流水为 `produce +6`、`ship -2`、`ship -1`、`transfer_customer -3`，客户库存侧为 `transfer_order +3`，来源批次 `source_order_id` 正确。新版真实库备份 `/private/tmp/order-manager-real-db-backups/real-db-backup-20260716232921.sqlite` 已成功恢复，恢复前安全备份为 `/Users/jnhxf/Library/Application Support/com.jnhxf.order-manager/order-manager-before-cli-restore-20260716232956.sqlite`。
+- 本轮验证通过：`pnpm run check`、Rust `fmt/clippy`、124 个库测试、5 个真实 Excel 集成测试、Playwright 8/8、release `.app` 构建和新结构真实库实机验收。release 路径为 `/Users/jnhxf/projects/r/order-manager/src-tauri/target/release/bundle/macos/铝材订单管理系统.app`，版本 `1.0.0`、arm64；当前仍为 adhoc/linker-signed，无 Team ID，Apple Developer 签名与 notarization 按用户要求最后再做。
+- 客户库存批量打印按历史日期和完整价格快照合表：同日同价批次共用表格，同日异价自动拆表，空日期批次保持独立；每个表格显示铝锭价、计价方式和非零加工费。末列按批次合并显示不限制字符数的分组，默认取批次备注第一个逗号后的全部内容，备注为空时回退批次号；分组完整换行显示，备注保持单行。预览按实际 A4 高度分页，不拉伸行，不拆分单个批次分组；完整分组放不下时整组换页，空白 A4 仍放不下时阻止打印，只有总计放不下时单独生成总计末页。商品列已按真实长名称加宽，分页纯逻辑、浏览器 fallback、Rust 打印快照和 UI 冒烟均有覆盖。
+- 最近加工费选择逻辑完成纯重构：新增 `src/features/customers/lib/customer-pricing.ts`，统一客户普通/特殊、含税/不含税加工费快照和特殊关键词匹配；订单表单、订单浏览器 fallback、库存浏览器 fallback 和客户库存展示改为复用客户域 helper，删除三份重复规则及库存 fallback 的深层三元分支。字段映射、错误文案、校验顺序和业务行为不变；测试覆盖四种计价组合，并通过 `pnpm run check:all`、Playwright 冒烟、release App 构建和 `git diff --check`。
+- 最新 release 已同步到 `/Applications/铝材订单管理系统.app`：覆盖前确认安装版二进制时间为 `2026-07-14 10:52 +0800`，落后于仓库 release 的 `2026-07-14 22:28 +0800`；真实库已备份到 `/private/tmp/order-manager-real-db-backups/real-db-backup-20260714223355.sqlite`，旧 App 已保留到 `/private/tmp/order-manager-real-db-backups/old-app-20260714223355.app`。覆盖后安装版与仓库 release 二进制 SHA-256 一致；实际从 `/Applications` 启动后，设置页显示版本 `1.0.0`、构建时间 `2026/07/14 22:27`，数据库路径仍为 `/Users/jnhxf/Library/Application Support/com.jnhxf.order-manager/order-manager.sqlite`，未写入业务数据。
+- 当前安装包签名检查结果：`codesign` 显示 `adhoc/linker-signed`、无 Team ID，系统没有可用的代码签名身份，`spctl` 无法完成评估；本机试用不受影响，但交付到其他 Mac 前必须由人工决定 Apple Developer 签名、entitlements 和 notarization 方案。
+- 客户历史库存“历史下单日期”恢复原生日期选择器：撤销仅为桌面自动化改成普通文本框的交互退化，用户可通过日历选择日期，也可直接输入 `YYYY-MM-DD`；日期仍允许留空，前后端有效日期校验不变。Playwright 客户库存烟测增加 `type="date"` 回归断言并继续填入固定验收日期。修复后已重新构建 release App，二进制时间为 `2026-07-14 22:28 +0800`，并在真实 release 包中确认该字段暴露为包含年/月/日的日期时间区域；未写入真实业务数据。
+- 本轮 release 候选已完成构建和全量验证：版本 `1.0.0`，设置页构建时间 `2026/07/14 19:30`，产物为 `/Users/jnhxf/projects/r/order-manager/src-tauri/target/release/bundle/macos/铝材订单管理系统.app`；`pnpm run check:all`、Rust 118 个单元测试、5 个 Excel 集成测试、5 条 Playwright 冒烟和订单出库定向 UI 冒烟均通过。对应提交为 `a33815f 对齐 fallback 出库日期与备注快照`、`04f3571 对齐订单出库 fallback 校验顺序`。
+- 本轮 release 桌面验收已闭环：run id `20260714193234`，订单 `ALU20260714002` 完成导入、下单、3 支批量入库、45 kg 喷涂重量出库和打印预览；客户库存单批次出库单号 `ZMYSKH-20260620001-01`，剩余 `4` 支、喷涂重量 `12.34 kg`；合并出库单号 `ZMYSKH-CK20260714-01`，B=`3` 支/`12 kg`/`第二车`/`¥1.40`，A=`2` 支/`11 kg`/`第一车`/`¥1.30`，两批次剩余均为 `3` 支。`pnpm run desktop:acceptance -- verify --manifest /private/tmp/order-manager-desktop-acceptance/20260714193234/manifest.json` 最终全部 PASS。
+- 本轮 App 备份恢复已验证：手动备份为 `/private/tmp/order-manager-desktop-acceptance/20260714193234/manual-backup-from-app-20260714193234.sqlite`，恢复前自动安全备份为 `/Users/jnhxf/Library/Application Support/com.jnhxf.order-manager/order-manager-before-restore-1784034188.sqlite`；修正验收自动化金额输入后，最终正确数据另存为 `/private/tmp/order-manager-desktop-acceptance/20260714193234/manual-backup-final-from-app-20260714193234.sqlite`。恢复后已确认订单仍存在且状态为“已出库”。
+- 本轮验收数据已回收：退出 release App 后使用 `/private/tmp/order-manager-desktop-acceptance/20260714193234/real-db-before-desktop-acceptance-20260714193234.sqlite` 恢复真实库，CLI 覆盖前安全备份为 `/Users/jnhxf/Library/Application Support/com.jnhxf.order-manager/order-manager-before-cli-restore-20260714212344.sqlite`；恢复后 `PRAGMA quick_check` 为 `ok`，客户 `4`、有效商品 `72`、订单 `1`，run id `20260714193234` 的客户、商品、订单、客户库存批次和客户库存出库单均已移除。
+- 订单出库浏览器 fallback 组合错误优先级对齐：`createDeliveryNote` 现与 Rust `create_delivery_note_inner` 一致，先检查已存在出库单再读取订单状态，并在库存数量校验前完成颜色分类、计价方案和必需加工费校验；订单无库存且本次数量为 0 时优先返回“当前订单没有可出库库存”，负数量仍优先于无库存返回。fallback 测试覆盖出库单存在但订单缓存缺失、缺计价且无库存、零数量且无库存、负数量且无库存四类组合场景，合法出库数据流不变。
+- 浏览器 fallback 出库日期与快照规范化对齐：订单出库额外收费改为与 Rust 后端一致地优先校验，订单出库单主备注和明细备注保存前统一裁剪；订单出库单、客户库存出库单、无历史日期批次号和客户库存合并出库单号统一使用本地业务日期，不再用 UTC 日期截取，避免东八区午夜附近日期或单号提前一天。fallback 测试覆盖收费错误优先级、备注裁剪、两类出库日期和合并单号本地日期。客户库存批次表行补充稳定测试标识，UI 冒烟在独立出库单区域出现同批次号后仍能准确复核批次剩余库存；5 条 Playwright 冒烟全部通过。
+- 浏览器 fallback 公共库存零库存写入与出库流水排序补齐：公共库存规格没有现存库存行时，现会像 Rust 后端一样先从商品资料读取快照并以 `0` 为当前库存，支持首次入库、盘点为零和清零后再次入库，未知商品仍报“商品不存在”；订单多明细部分出库产生的 `ship` 和双向 `transfer_public` 流水统一使用递增流水 ID，按创建时间/ID 倒序后保持真实写入顺序，不再按流水类型聚集。fallback 测试覆盖首次/再次入库持久化，以及双明细出库六条流水和模块重载。
+- 客户库存出库计价方案浏览器 fallback 对齐：客户历史库存出库单不再把价格组方案固定写成“浏览器预览价”，现像 Rust 后端一样按批次客户的特殊计价关键词匹配批次备注，只更新方案名和触发关键词，继续使用批次已保存的价格快照；单批次默认价和多价格组合并出库中默认价/“第二车价”分别绑定到对应价格组的测试已覆盖。
+- 订单出库计价浏览器 fallback 对齐：创建出库单时不再无条件沿用订单原加工费快照，现按出库时选择的含税/不含税方式从客户资料读取对应普通价格组，订单备注命中特殊计价关键词时使用特殊价格组，并保存计价方案名与触发关键词；客户资料缺失时仅在计价方式与订单一致时回退订单快照，切换计价方式则按 Rust 口径报“客户资料未设置…加工费”。fallback 测试覆盖含税普通价格校验，以及订单原含税、出库切不含税并命中“加急”时保存特殊不含税喷涂费、方案名和关键词。
+- 库存写入浏览器 fallback no-op 补齐：公共库存入库/出库/盘点、订单库存单行入库/出库/盘点和公共库存转订单不再只校验后直接返回成功，现会按 Rust 口径更新并持久化公共/订单库存、写入库存流水、校验同商品/长度/颜色和出库后锁定；公共库存清零时删除库存行但仍返回零库存快照。订单批量入库同步补齐订单商品归属、出库锁定和 `produce` 流水，订单库存行的“公共库存可转”按精确规格读取真实公共库存数量。fallback 测试覆盖成功写入、公共库存不足、未知订单商品、出库后单行/批量/公共转入锁定和返回对象隔离。
+- 订单出库浏览器 fallback 数据流已更新为当前多次出库规则：每次只扣本次出库数量并写 `ship` 流水，未出余额继续保留在订单库存；首次出库写锁定状态，余额为 0 时按 `shipped` 完结。手动剩余转公共/客户库存分别写双向流水并清零完结，fallback 测试覆盖 `-01/-02`、锁定、两类手动转移、来源快照和完结后拦截。
+- 客户库存批次更新浏览器 fallback 锁定文案对齐：已生成出库单的批次在浏览器预览中修改时，错误提示统一为 Rust 后端的“该客户库存批次已出库，不能修改”，避免同一业务拦截在两种运行环境下文案不一致；锁定规则不变，fallback 回归断言同步更新。
+- 订单出库单结构化错误码补漏：创建出库单请求里的商品/长度/颜色无法匹配当前订单明细时，后端产生的“订单商品不存在”不再误映射为 `INTERNAL_ERROR`，改为稳定业务码 `DELIVERY_ITEM_NOT_FOUND`；中文提示和出库校验顺序不变，Rust 映射测试同步覆盖。
+- 订单表单底部错误展示继续统一：保存订单、读取客户和读取商品失败时，不再直接访问 React Query error 的 `.message`，统一通过 `src/lib/errors.ts` 的 `getErrorMessage` 兼容结构化 Tauri 错误、浏览器 fallback `Error` 和字符串错误；表单错误优先级及订单提交逻辑不变。配套验证命令：`pnpm run check:all`、`git diff --check`。
+- Tauri 公开命令结构化错误迁移已完成：`customers.rs`、`products.rs`、`orders.rs`、`inventory.rs`、`files.rs` 和 `ocr.rs` 中所有可失败的 `#[tauri::command]` 统一返回 `CommandError { code, message }`，内部业务函数继续保留字符串错误并只在命令边界映射稳定错误码；前端订单、客户、商品、库存、设置、导出、打印和 OCR 调用统一通过 `src/lib/errors.ts` 的 `getErrorMessage` 兼容结构化错误。商品跨页全选失败不再静默，商品导入解析与订单/出库单打印会显示后端具体中文原因。最终验证：`pnpm run check:all` 全部通过，Rust 118 个单元测试和 5 个 Excel 集成测试通过，`git diff --check` 通过。
+- 浏览器 fallback 订单库存默认数量对齐业务规则：`src/features/inventory/api/inventory-api.ts` 中没有持久化库存记录的订单明细现在默认当前库存 `0`，而不是直接等于下单数量，保持“下单后先入库再出库”的口径。`tests/ui/smoke.spec.ts` 同步更新烟测：订单出库前先批量入库，出库数量默认空时先点“全部出库”，客户库存补打从独立“客户库存出库单”区域的“预览/补打”入口进入，并用无库存记录场景覆盖默认 `0` 口径。配套验证命令：`pnpm run test:inventory-api-fallback`、`pnpm exec playwright test tests/ui/smoke.spec.ts`、`pnpm run check`、`git diff --check`。
+- 库存列表浏览器 fallback 返回对象隔离补齐：`src/features/inventory/api/inventory-api.ts` 为 fallback 公共库存、订单库存和库存流水增加克隆 helper，`listInventory` 的 `items`、`orderItems`、`recentMovements`、`orderMovements` 返回独立对象，避免调用方修改库存列表返回值时污染内存缓存，对齐 Rust/Tauri 返回独立结构体的调用边界；`tests/node/test-inventory-api-fallback.mjs` 补充修改订单库存返回对象后再次读取不受影响的断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户库存流水浏览器 fallback 返回对象隔离补齐：`src/features/inventory/api/inventory-api.ts` 为 fallback 客户库存流水增加克隆 helper，`listCustomerInventory` 的 `recentMovements` 返回独立对象，避免调用方修改返回流水时污染内存缓存，对齐 Rust/Tauri 返回独立结构体的调用边界；`tests/node/test-inventory-api-fallback.mjs` 补充修改客户库存流水返回对象后再次读取不受影响的断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户库存批次读取浏览器 fallback 返回对象隔离补齐：`src/features/inventory/api/inventory-api.ts` 为 fallback 客户库存批次增加克隆 helper，`listCustomerInventory` 的 `batches` 和 `getCustomerInventoryBatch` 返回独立对象，并复制 `items` 与 `deliveryNoteIds`，避免调用方修改返回批次或明细时污染内存缓存，对齐 Rust/Tauri 返回独立结构体的调用边界；`tests/node/test-inventory-api-fallback.mjs` 补充修改批次列表返回对象、明细、出库单 ID 数组和批次详情返回明细后再次读取不受影响的断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 出库单读取浏览器 fallback 返回对象隔离补齐：`src/features/inventory/api/inventory-api.ts` 为 fallback 出库单增加克隆 helper，`createDeliveryNote`、`getDeliveryNote`、`createCustomerInventoryDeliveryNote`、`getCustomerInventoryDeliveryNote` 返回独立对象，并复制 `items`、`priceGroups` 及其嵌套明细，避免调用方修改返回出库单时污染内存 Map，对齐 Rust/Tauri 返回独立结构体的调用边界；`tests/node/test-inventory-api-fallback.mjs` 补充修改订单出库单、客户库存出库单和价格组明细后再次读取不受影响的断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 商品读取浏览器 fallback 返回对象隔离补齐：`src/features/products/api/products-api.ts` 为 fallback 商品增加克隆 helper，`listProducts`、`exportProducts`、`createProduct`、`updateProduct`、`setProductCustomers` 返回独立对象，并复制 `assignedCustomerIds` / `assignedCustomerNames` 数组，避免调用方修改返回对象或归属数组时污染模块内商品缓存，对齐 Rust/Tauri 返回独立结构体的调用边界；`tests/node/test-product-api-fallback.mjs` 补充修改新增、列表、导出、设置归属和更新返回对象后再次读取不受影响的断言。配套验证命令：`node tests/node/test-product-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户读取浏览器 fallback 返回对象隔离补齐：`src/features/customers/api/customers-api.ts` 为 fallback 客户增加克隆 helper，`listCustomers`、`exportCustomers`、`createCustomer`、`updateCustomer` 返回独立对象，避免调用方修改返回对象时污染模块内客户缓存，对齐 Rust/Tauri 返回独立结构体的调用边界；`tests/node/test-customer-api-fallback.mjs` 补充修改新增、列表、导出和更新返回对象后再次读取不受影响的断言。配套验证命令：`node tests/node/test-customer-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单读取浏览器 fallback 返回对象隔离补齐：`src/features/orders/api/orders-api.ts` 为 fallback 订单摘要和订单详情增加克隆 helper，`listOrders`、`getOrder`、`createOrder`、`updateOrder` 返回独立对象和明细数组，避免调用方修改返回对象时污染模块内缓存，对齐 Rust/Tauri 返回独立结构体的调用边界；`tests/node/test-order-api-fallback.mjs` 补充修改列表返回对象和详情明细后再次读取不受影响的断言。配套验证命令：`node tests/node/test-order-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单列表浏览器 fallback 返回值隔离补齐：`src/features/orders/api/orders-api.ts` 的 fallback `listOrders` 改为返回订单摘要数组浅拷贝，避免调用方修改返回数组时污染模块内 `browserFallbackOrders` 缓存，更接近 Rust `list_orders` 每次返回独立 `Vec` 的语义；`tests/node/test-order-api-fallback.mjs` 补充修改返回数组后再次读取仍保留订单的断言。配套验证命令：`node tests/node/test-order-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单写入浏览器 fallback 客户商品校验补齐：`src/features/orders/api/orders-api.ts` 在 fallback 创建/更新订单时读取本地客户、商品和客户商品归属缓存，补齐“选择的客户不存在”“请选择当前客户的商品”和按颜色分类加工费未设置校验，并用商品资料快照覆盖明细商品名、模具编号、厚度、米重和理论重量，对齐 Rust `validate_order_payload` 从客户资料和商品归属关系生成订单快照的口径；`tests/node/test-order-api-fallback.mjs` 补充客户/商品缓存夹具、未知客户、未归属商品、缺坯料加工费和商品快照覆盖断言。配套验证命令：`node tests/node/test-order-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户/商品导入浏览器 fallback 错误优先级对齐：`src/features/customers/api/customers-api.ts` 和 `src/features/products/api/products-api.ts` 将 fallback 批量导入校验拆成“先检查导入文件内部重复，再检查系统已有值”，对齐 Rust `import_customers` / `import_products_with_connection` 在混合错误场景下优先返回文件内重复的口径；`tests/node/test-customer-api-fallback.mjs` 和 `tests/node/test-product-api-fallback.mjs` 补充系统已存在且文件内重复时仍返回第 2 行重复错误的断言。配套验证命令：`node tests/node/test-customer-api-fallback.mjs`、`node tests/node/test-product-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户/商品列表浏览器 fallback 分页裁剪口径对齐：`src/features/customers/api/customers-api.ts` 和 `src/features/products/api/products-api.ts` 在 fallback 列表切片前统一将 `page` 裁剪为最小 1、`pageSize` 裁剪到 10..1000，对齐 Rust `list_customers` / `list_products` 的分页参数处理；`tests/node/test-customer-api-fallback.mjs` 和 `tests/node/test-product-api-fallback.mjs` 补充 `page=0` 与 `pageSize=2` 会按最小页长 10 返回的断言。配套验证命令：`node tests/node/test-customer-api-fallback.mjs`、`node tests/node/test-product-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 商品导入浏览器 fallback 归属客户名规范化补齐：`src/features/products/api/products-api.ts` 在 fallback 导入商品解析 `assignedCustomerNames` 时裁剪客户名、去重并忽略空项，未知归属客户错误改为带行号的“第 X 行：归属客户不存在：客户名”，对齐 Rust `import_products_with_connection` 对导入归属客户名的 trim 与错误文案口径；`tests/node/test-product-api-fallback.mjs` 补充带空格/重复归属客户可导入和未知客户行号文案断言。配套验证命令：`node tests/node/test-product-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 商品导入浏览器 fallback 空列表校验补齐：`src/features/products/api/products-api.ts` 在 fallback `importProducts` 写入前拦截空商品列表并返回“没有可导入的商品”，对齐 Rust `import_products_with_connection`；`tests/node/test-product-api-fallback.mjs` 补充空导入断言。配套验证命令：`node tests/node/test-product-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 商品更新浏览器 fallback 未下订单明细快照同步补齐：`src/features/products/api/products-api.ts` 在 fallback 更新商品资料成功后读取 `order-manager:fallback-order-details`，同步 `editing`/`saved` 订单明细里的商品名称、模具编号、厚度、米重和理论重量，并派发 `order-manager:fallback-order-upserted`，对齐 Rust `update_product` 会同步未下订单明细快照、但保留 `ordered` 订单历史快照的口径；`tests/node/test-product-api-fallback.mjs` 补充 saved 订单明细同步、理论重量重算和 ordered 订单不变的断言。配套验证命令：`node tests/node/test-product-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 商品归属浏览器 fallback 基础校验补齐：`src/features/products/api/products-api.ts` 在 fallback 批量分配客户商品和设置单商品归属前裁剪客户/商品 ID，补齐客户必选、商品必选、重复商品、商品 ID 不能为空、客户不存在和商品不存在校验，避免浏览器预览写入悬空或重复的客户商品关系，文案对齐 Rust `assign_customer_products` / `set_product_customers`；`tests/node/test-product-api-fallback.mjs` 补充空客户、空商品、重复商品、未知客户/商品和裁剪归属 ID 的断言。配套验证命令：`node tests/node/test-product-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户更新浏览器 fallback 未下订单快照同步补齐：`src/features/customers/api/customers-api.ts` 在 fallback 更新客户资料成功后读取 `order-manager:fallback-order-details`，同步 `editing`/`saved` 订单的客户名称、客户地址和更新时间，并派发 `order-manager:fallback-order-upserted`，对齐 Rust `update_customer` 会同步未下订单客户快照、但保留 `ordered` 订单历史快照的口径；`tests/node/test-customer-api-fallback.mjs` 补充 saved 订单同步和 ordered 订单不变的断言。配套验证命令：`node tests/node/test-customer-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户写入浏览器 fallback 基础校验补齐：`src/features/customers/api/customers-api.ts` 新增客户 payload 规范化 helper，在 fallback 新增、更新和导入写入前裁剪客户名称、电话、地址和特殊计价关键词，并补齐客户名称必填、全部普通/特殊加工费非负、默认含税/不含税对应价格组至少设置一项加工费、导入空列表和更新空客户 ID 校验，文案对齐 Rust `validate_customer` / `import_customers` / `update_customer`；`tests/node/test-customer-api-fallback.mjs` 补充裁剪保存、空名称、负加工费、默认计价缺加工费、空导入、导入行号文案和更新空 ID 断言。配套验证命令：`node tests/node/test-customer-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 商品写入浏览器 fallback 基础校验补齐：`src/features/products/api/products-api.ts` 新增商品 payload 规范化 helper，在 fallback 新增、更新和导入写入前裁剪商品名称/模具编号，并补齐商品名称、模具编号、厚度、米重校验；更新时裁剪商品 ID 并补齐“商品 ID 不能为空”，错误文案对齐 Rust `validate_create_product` / `update_product`，避免浏览器预览写入空商品或无效规格。`tests/node/test-product-api-fallback.mjs` 补充新增/更新裁剪保存、空字段、非正厚度/米重和导入行号文案断言。配套验证命令：`node tests/node/test-product-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户删除浏览器 fallback 未下订单引用保护补齐：`src/features/customers/api/customers-api.ts` 在 fallback 删除客户前裁剪客户 ID、补齐空 ID 校验，并读取 `order-manager:fallback-order-details` 拦截 `editing`/`saved` 订单仍引用的客户，返回“有未下订单引用此客户，不能删除”；删除客户时会把 `ordered` 订单快照里的 `customerId` 置空并派发订单 upsert 事件，对齐 Rust `delete_customer_with_connection` 保留已下单订单快照但解除客户外键的口径。`tests/node/test-customer-api-fallback.mjs` 补充空客户 ID、未下订单引用拦截、已下单引用允许删除和订单缓存脱钩断言。配套验证命令：`node tests/node/test-customer-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 商品删除浏览器 fallback 未下订单引用保护补齐：`src/features/products/api/products-api.ts` 在 fallback 删除商品前裁剪商品 ID、补齐空 ID 校验，并读取 `order-manager:fallback-order-details` 拦截 `editing`/`saved` 订单明细仍引用的商品，返回“有未下订单引用此商品，不能删除”，对齐 Rust `ensure_product_is_deletable`；已下单订单的历史引用不阻止删除，仍会移除商品资料和客户归属。`tests/node/test-product-api-fallback.mjs` 补充空商品 ID、未下订单引用拦截和已下单引用允许删除的断言。配套验证命令：`node tests/node/test-product-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单列表浏览器 fallback 排序口径对齐：`src/features/orders/api/orders-api.ts` 为 fallback 订单摘要和详情增加按 `updatedAt` 倒序排序 helper，在 localStorage 加载、创建、更新和外部 upsert 事件后统一排序，对齐 Rust `list_orders` 的 `ORDER BY orders.updated_at DESC`；`tests/node/test-order-api-fallback.mjs` 补充更新后订单回到列表顶部、缓存乱序重载后按更新时间返回的断言，并将出库状态断言改为按订单号查找。配套验证命令：`node tests/node/test-order-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单写入浏览器 fallback 基础校验补齐：`src/features/orders/api/orders-api.ts` 新增订单 fallback payload 规范化 helper，在创建/更新订单前补齐客户必选、客户名称、经手人、铝锭价、加工费非负、订单状态、已下单日期、明细非空和明细商品/长度/颜色/数量校验，并在读取/删除时裁剪空订单号、更新/删除已下单订单时返回“已下单订单不能编辑/删除”，对齐 Rust 订单命令的确定性校验口径；`tests/node/test-order-api-fallback.mjs` 补充无效 payload、空订单号、已下单编辑/删除和无效写入不污染列表的断言。配套验证命令：`node tests/node/test-order-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 商品列表浏览器 fallback 筛选排序口径对齐：`src/features/products/api/products-api.ts` 在商品 fallback 过滤中补齐无效 `assignmentStatus` 校验，返回“归属状态参数无效”，并让 `listProducts`、`exportProducts`、`listProductIds` 统一按商品名称升序返回，对齐 Rust `list_products` / `export_products` / `list_product_ids`；`tests/node/test-product-api-fallback.mjs` 补充无效归属状态断言并调整列表、导出和客户归属商品 ID 顺序断言。
+- 客户列表浏览器 fallback 筛选排序口径对齐：`src/features/customers/api/customers-api.ts` 抽出客户列表 fallback 筛选 helper，让 `listCustomers` 和 `exportCustomers` 共用搜索、快速筛选和排序逻辑；无效 `quickFilter` 现在返回“客户筛选参数无效”，列表/导出按 `updatedAt` 倒序、客户名称升序排序，对齐 Rust `list_customers` / `export_customers`；`tests/node/test-customer-api-fallback.mjs` 补充无效筛选断言和更新客户后排序断言。
+- 库存列表浏览器 fallback 搜索口径补齐：`src/features/inventory/api/inventory-api.ts` 为 `listInventory` fallback 增加搜索过滤，公共库存按商品名、模具编号、长度、颜色和最近备注匹配，订单库存按订单号、客户名、商品名、模具编号和颜色匹配，库存流水按商品名、模具编号、订单号、出库单号、颜色和备注匹配并按 `createdAt/id` 倒序取前 50 条；`tests/node/test-inventory-api-fallback.mjs` 补充订单库存搜索命中和无匹配断言，避免浏览器预览忽略库存页搜索词。
+- 客户库存批次列表浏览器 fallback 搜索与排序口径对齐：`src/features/inventory/api/inventory-api.ts` 在 `listCustomerInventory` fallback 的批次搜索中加入长度匹配，并将批次排序从按创建时间倒序改为按历史下单日期、更新时间、批次号倒序，对齐 Rust `query_customer_inventory_batches`；`tests/node/test-inventory-api-fallback.mjs` 补充按商品名和长度搜索批次命中的断言。
+- 客户库存出库单列表浏览器 fallback 搜索口径对齐：`src/features/inventory/api/inventory-api.ts` 将客户库存出库单 summary 的搜索从只匹配出库单号、客户、经手人和批次号，扩展为匹配出库单备注、出库日期、明细商品名、模具编号、颜色以及关联流水字段，并按 `createdAt/id` 倒序取前 80 条，对齐 Rust `query_customer_inventory_delivery_note_summaries`；`tests/node/test-inventory-api-fallback.mjs` 补充按出库单备注和商品名搜索出库单列表的断言。
+- 客户库存列表浏览器 fallback 流水搜索口径对齐：`src/features/inventory/api/inventory-api.ts` 为 `listCustomerInventory` fallback 的 `recentMovements` 增加搜索过滤，按批次号、客户名、出库单号、商品名、模具编号、颜色和备注匹配，并改为按 `createdAt/id` 倒序取前 80 条，对齐 Rust `query_customer_inventory_movements`；`tests/node/test-inventory-api-fallback.mjs` 补充无匹配搜索流水为空和按商品名搜索命中流水的断言。
+- 客户库存列表浏览器 fallback 总库存口径对齐：`src/features/inventory/api/inventory-api.ts` 将 `listCustomerInventory` fallback 的 `totalQuantity` 改为按全部客户库存批次汇总，不再受搜索条件过滤影响，对齐 Rust `list_customer_inventory` 中全量 `customer_inventory_stocks` 求和口径；`tests/node/test-inventory-api-fallback.mjs` 补充搜索无匹配时批次为空但总库存仍保留全量的断言。
+- 客户库存出库单浏览器 fallback 明细错误文案对齐：`src/features/inventory/api/inventory-api.ts` 将 `createCustomerInventoryDeliveryNote` fallback 中缺失出库明细的错误改为“客户库存商品不存在”，并让超库存与缺出库分组错误带上商品名，分别对齐 Rust `query_customer_inventory_stock_for_delivery` 和创建客户库存出库单写入阶段；`tests/node/test-inventory-api-fallback.mjs` 补充不存在明细、超库存和缺分组文案断言。
+- 客户库存出库单浏览器 fallback 空批次校验顺序对齐：`src/features/inventory/api/inventory-api.ts` 将 `createCustomerInventoryDeliveryNote` fallback 的批次 ID 归一化和空批次校验前移到经手人、明细、重量和数量校验之前，对齐 Rust `create_customer_inventory_delivery_note`，确保空批次场景优先返回“请选择客户库存批次”；`tests/node/test-inventory-api-fallback.mjs` 补充空批次、空经手人、负重量同时存在时的优先级断言。
+- 库存读取类浏览器 fallback 空 ID 校验补齐：`src/features/inventory/api/inventory-api.ts` 在 `getDeliveryNote`、`getCustomerInventoryBatch`、`getCustomerInventoryDeliveryNote` fallback 读取前裁剪 ID 并补齐空值校验，分别返回“出库单号不能为空”和“请选择客户库存批次”，读取时使用裁剪后的 ID，对齐 Rust 读取命令；`tests/node/test-inventory-api-fallback.mjs` 补充三类空 ID 断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户库存盘点浏览器 fallback 基础校验补齐：`src/features/inventory/api/inventory-api.ts` 在 `adjustCustomerInventoryStock` fallback 写入盘点前补齐客户库存明细必选、盘点数量不能小于 0、客户库存商品不存在和盘点数量未变化校验，文案对齐 Rust `adjust_customer_inventory_stock`，避免浏览器预览写入负数或无变化盘点流水；`tests/node/test-inventory-api-fallback.mjs` 补充四类断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户库存批次更新浏览器 fallback 加工费校验补齐：`src/features/inventory/api/inventory-api.ts` 在 `updateCustomerInventoryBatch` fallback 生成更新明细前复用客户库存批次加工费校验 helper，按更新后的明细颜色分类校验断桥/喷涂/坯料/氧化/电泳加工费，文案对齐 Rust `validate_processing_fees_for_required_weights`；`tests/node/test-inventory-api-fallback.mjs` 补充更新批次缺少含税喷涂加工费断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户库存批次新增浏览器 fallback 加工费校验补齐：`src/features/inventory/api/inventory-api.ts` 在新增客户库存批次 fallback 写入前按明细颜色分类计算必需加工费，并在对应断桥/喷涂/坯料/氧化/电泳加工费为 0 时返回与 Rust `validate_processing_fees_for_required_weights` 一致的“含税/不含税…加工费未设置”错误；`tests/node/test-inventory-api-fallback.mjs` 补充喷涂明细缺少含税喷涂加工费断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户库存批次更新浏览器 fallback 明细归属校验补齐：`src/features/inventory/api/inventory-api.ts` 在 `updateCustomerInventoryBatch` fallback 生成更新明细前复用客户库存批次明细校验 helper，拦截未归属当前客户的商品以及同 helper 覆盖的空商品/无效长度/空颜色/非正数量，避免修改批次时绕过新增路径已有校验；`tests/node/test-inventory-api-fallback.mjs` 补充更新批次使用未归属商品的断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户库存批次新增浏览器 fallback 明细基础校验补齐：`src/features/inventory/api/inventory-api.ts` 新增客户库存批次明细 fallback 校验 helper，在新增批次写入前拦截商品为空、长度不大于 0、颜色为空、数量不大于 0、商品不属于当前客户，文案对齐 Rust 写入客户库存明细流程，避免浏览器预览生成空商品或未归属商品的历史库存；`tests/node/test-inventory-api-fallback.mjs` 补充五类明细断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户库存批次更新浏览器 fallback 顶层校验补齐：`src/features/inventory/api/inventory-api.ts` 在 `updateCustomerInventoryBatch` fallback 查询批次和写入更新前补齐批次必选、客户必选、铝锭价必须大于 0、库存明细非空校验，文案对齐 Rust `update_customer_inventory_batch`，并使用裁剪后的批次号/客户 ID 继续更新；`tests/node/test-inventory-api-fallback.mjs` 补充四类前置校验断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户库存批次新增浏览器 fallback 顶层校验补齐：`src/features/inventory/api/inventory-api.ts` 在 `createCustomerInventoryBatch` fallback 查询客户和写入批次前补齐客户必选、铝锭价必须大于 0 的校验，文案对齐 Rust `create_customer_inventory_batch`，避免空客户被笼统报成“客户不存在”或非正价格进入浏览器预览库存；`tests/node/test-inventory-api-fallback.mjs` 补充空客户和零铝锭价断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单批量入库浏览器 fallback 基础校验补齐：`src/features/inventory/api/inventory-api.ts` 在 `adjustOrderInventoryBatch` fallback 写入 localStorage 前补齐订单必选、明细非空、订单商品必填、长度大于 0、颜色必填和入库数量必须大于 0 的校验，文案对齐 Rust `adjust_order_inventory_batch` / `apply_order_inventory_batch_adjustment`，避免浏览器预览写入无效订单库存行；`tests/node/test-inventory-api-fallback.mjs` 补充六类前置校验断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 公共库存转订单浏览器 fallback 基础校验补齐：`src/features/inventory/api/inventory-api.ts` 在 `transferPublicInventoryToOrder` fallback 直接返回前补齐订单必选、商品必选、长度大于 0、颜色必填和转入数量必须大于 0 的校验，文案对齐 Rust `transfer_public_inventory_to_order`；`tests/node/test-inventory-api-fallback.mjs` 补充五类前置校验断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单库存调整浏览器 fallback 基础校验补齐：`src/features/inventory/api/inventory-api.ts` 在 `adjustOrderInventory` fallback 直接返回前补齐订单必选、商品必选、长度大于 0、颜色必填、订单库存类型合法和非盘点数量必须大于 0 的校验，文案对齐 Rust `adjust_order_inventory`；`tests/node/test-inventory-api-fallback.mjs` 补充六类前置校验断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 公共库存调整浏览器 fallback 基础校验补齐：`src/features/inventory/api/inventory-api.ts` 在 `adjustInventory` fallback 查找库存行前补齐商品必选、长度大于 0、颜色必填、库存类型合法和非盘点数量必须大于 0 的校验，文案对齐 Rust `adjust_inventory`，避免无效参数被笼统报成“商品不存在”；`tests/node/test-inventory-api-fallback.mjs` 补充五类前置校验断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户库存出库单浏览器 fallback 所选批次归属校验补齐：`src/features/inventory/api/inventory-api.ts` 在 fallback 创建客户库存出库单时先从全部客户库存批次中解析出库 stock，再区分“客户库存明细不存在”和“出库明细不属于所选客户库存批次”，并保留同客户校验，避免跨批次误传 stockId 时浏览器预览返回笼统文案；`tests/node/test-inventory-api-fallback.mjs` 补充选择 A 批次却传入 B 批次明细的断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户库存出库单浏览器 fallback 必填重量与颜色冲突校验补齐：`src/features/inventory/api/inventory-api.ts` 抽出 fallback 出库重量校验 helper，客户库存出库单在每个价格组解析正出库明细后按库存明细颜色计算断桥/喷涂/坯料/氧化/电泳必填重量，并复用颜色分类冲突校验，返回与 Rust 后端一致的“请填写…重量”和冲突颜色文案；`tests/node/test-inventory-api-fallback.mjs` 补充客户库存缺喷涂重量和冲突颜色出库断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单出库单浏览器 fallback 颜色分类冲突校验补齐：`src/features/inventory/api/inventory-api.ts` 在 fallback 计算出库单必填重量时复用 `getProcessingCategoryConflict`，对“同时命中断桥/氧化/电泳”等多类的颜色返回与 Rust `checked_processing_category_from_color` 一致的错误文案，避免浏览器预览按第一命中分类继续创建出库单；`tests/node/test-inventory-api-fallback.mjs` 补充冲突颜色断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单出库单浏览器 fallback 明细基础校验补齐：`src/features/inventory/api/inventory-api.ts` 在 fallback 创建订单出库单时对每一行出库明细补齐商品必填、长度必须大于 0、颜色必填校验，错误文案对齐 Rust 后端，避免浏览器预览把空商品/无效长度/空颜色延后报成“订单商品不存在”或继续组装出库单；`tests/node/test-inventory-api-fallback.mjs` 补充三类断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单出库单浏览器 fallback 必填重量校验补齐：`src/features/inventory/api/inventory-api.ts` 在 fallback 创建订单出库单时按实际出库行颜色分类计算断桥/喷涂/坯料/氧化/电泳必填重量，并在对应重量为 0 时返回与 Rust 后端一致的“请填写…重量”错误，避免浏览器预览绕过页面校验生成缺少过磅重量的出库单；`tests/node/test-inventory-api-fallback.mjs` 补充喷涂出库缺少重量断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单出库单浏览器 fallback 库存数量校验补齐：`src/features/inventory/api/inventory-api.ts` 在 fallback 创建订单出库单时读取当前订单库存总量并拦截无可出库库存、总出库数量超过订单库存、单行出库数量超过当前行库存和订单商品不存在，避免浏览器预览生成超库存出库单；`tests/node/test-inventory-api-fallback.mjs` 补充总量超库存和单行超库存断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 出库单浏览器 fallback 出库数量校验补齐：`src/features/inventory/api/inventory-api.ts` 在订单出库单 fallback 创建前校验出库数量不能小于 0 且至少录入一项正出库数量，在客户库存出库单 fallback 中同样拦截负出库数量，避免非正数量被过滤后创建空出库单或返回不一致文案；`tests/node/test-inventory-api-fallback.mjs` 补充订单出库单零数量/负数量和客户库存出库单负数量断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 出库单浏览器 fallback 额外收费校验补齐：`src/features/inventory/api/inventory-api.ts` 新增共享的 fallback 额外收费规范化 helper，订单出库单和客户库存出库单统一拦截负收费金额、非空收费名称但金额不大于 0，并在收费名称为空时清零金额，对齐 Rust 后端 `normalize_delivery_extra_charge`；`tests/node/test-inventory-api-fallback.mjs` 补充订单出库单负收费/零收费和客户库存出库单零收费断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户库存出库单浏览器 fallback 基础校验补齐：`src/features/inventory/api/inventory-api.ts` 在 fallback 创建客户库存出库单前补齐经手人必填、出库明细非空和各价格组五类重量不能小于 0 的校验，并使用裁剪后的经手人写入出库单，文案对齐 Rust 后端；`tests/node/test-inventory-api-fallback.mjs` 补充空经手人、空明细和负重量断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单出库单浏览器 fallback 基础校验补齐：`src/features/inventory/api/inventory-api.ts` 在 fallback 创建订单出库单前补齐订单号必选、出库明细非空和五类重量不能小于 0 的校验，并统一使用裁剪后的订单号写入出库单，文案对齐 Rust 后端；`tests/node/test-inventory-api-fallback.mjs` 补充空订单号、空明细和负重量断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单出库单浏览器 fallback 下单状态校验补齐：`src/features/inventory/api/inventory-api.ts` 在 fallback 创建订单出库单前校验订单必须存在且状态为 `ordered`，否则返回“订单不存在或未下单”，对齐 Rust 后端 `query_order_for_delivery_note` 口径；`tests/node/test-inventory-api-fallback.mjs` 补充不存在订单和已保存未下单订单创建出库单应拒绝的断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单出库单浏览器 fallback 已由旧“重复创建拦截”升级为多次分批出库：已有出库单不再阻止下一张，仅订单库存已完结时拒绝；出库单缓存按 `订单号-序号` 保存，避免覆盖前一张。
+- 订单浏览器 fallback 显式编号唯一性校验补齐：`src/features/orders/api/orders-api.ts` 在 fallback 创建订单时校验最终订单 ID 是否已存在，显式传入重复订单编号时返回“订单编号已存在”，对齐 Rust 后端主键冲突文案，避免浏览器预览写入重复订单；`tests/node/test-order-api-fallback.mjs` 补充重复显式订单编号创建应拒绝的断言。配套验证命令：`node tests/node/test-order-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户历史库存合并出库单浏览器 fallback 编号修复：`src/features/inventory/api/inventory-api.ts` 将合并客户库存出库单号从同前缀匹配数量加一改为扫描缓存出库单最大 `-NN` 尾号后递增，对齐 Rust 后端合并出库单编号口径；`tests/node/test-inventory-api-fallback.mjs` 增加预置当天 `KH-CK...-03` 后新合并出库单应生成 `KH-CK...-04` 的断号场景。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户历史库存单批次出库单浏览器 fallback 编号修复：`src/features/inventory/api/inventory-api.ts` 将单批次客户库存出库单号从 `deliveryNoteIds.length + 1` 改为扫描当前批次已记录出库单最大 `-NN` 尾号后递增，对齐 Rust 后端 `next_customer_inventory_delivery_note_id`；`tests/node/test-inventory-api-fallback.mjs` 增加预置 `KH-20260620001-03` 后新出库单应生成 `KH-20260620001-04` 的断号场景。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户历史库存批次浏览器 fallback 编号修复：`src/features/inventory/api/inventory-api.ts` 将客户库存批次号从同日期匹配数量加一改为扫描同前缀/日期最大尾号后递增，对齐 Rust 后端 `next_customer_inventory_batch_id`，避免加载断号缓存后复用或倒退批次号；`tests/node/test-inventory-api-fallback.mjs` 增加预置 `KH-20260620003` 后新建批次应生成 `KH-20260620004` 的重载场景。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单浏览器 fallback 编号规则修复：`src/features/orders/api/orders-api.ts` 将 fallback 新订单编号从订单总数递增改为按 `ALUyyyyMMdd` 同日期最大尾号递增，对齐 Rust 后端 `orders:YYYYMMDD` 序列口径，避免跨日期首单从 002 开始或断号缓存下复用尾号；`tests/node/test-order-api-fallback.mjs` 调整跨日期编号断言，并增加同日期 `ALU20260621003` 缓存后新单为 `ALU20260621004` 的重载场景。配套验证命令：`node tests/node/test-order-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 商品浏览器 fallback ID 生成修复：`src/features/products/api/products-api.ts` 将 fallback 新增/导入商品 ID 从数组长度加一改为扫描当前最大 `PROD-数字` 后递增，避免删除商品或加载断号缓存后复用已有 ID；`tests/node/test-product-api-fallback.mjs` 将缓存重载新增场景改为 `PROD-001`/`PROD-003` 断号数据并断言新商品为 `PROD-004`。配套验证命令：`node tests/node/test-product-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户浏览器 fallback ID 生成修复：`src/features/customers/api/customers-api.ts` 将 fallback 新增/导入客户 ID 从数组长度加一改为扫描当前最大 `CUS-数字` 后递增，避免删除客户或加载断号缓存后复用已有 ID；`tests/node/test-customer-api-fallback.mjs` 将缓存重载新增场景改为 `CUS-001`/`CUS-003` 断号数据并断言新客户为 `CUS-004`。配套验证命令：`node tests/node/test-customer-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户浏览器 fallback 唯一性校验补齐：`src/features/customers/api/customers-api.ts` 为 fallback 新增/更新/导入客户增加客户名称唯一性校验，导入同时拦截文件内重复客户名，错误文案对齐 Rust 后端的“客户名称已存在”和“第 X 行：客户名称重复”，避免浏览器预览写入重复客户后影响订单客户选择和商品归属同步；`tests/node/test-customer-api-fallback.mjs` 补充新增重复、导入重复和更新重复断言。配套验证命令：`node tests/node/test-customer-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 商品浏览器 fallback 唯一性校验补齐：`src/features/products/api/products-api.ts` 为 fallback 新增/更新商品增加商品名称和模具编号唯一性校验，更新时排除当前商品自身，错误文案对齐 Rust 后端的“商品名称已存在/模具编号已存在”，避免浏览器预览写入重复商品导致后续筛选和分配口径偏离真实桌面端；`tests/node/test-product-api-fallback.mjs` 补充新增重复模具编号、更新重复商品名和更新重复模具编号断言。配套验证命令：`node tests/node/test-product-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 设置页最近备份缓存读取继续收敛：新增 `src/features/settings/api/settings-storage.ts`，把最近备份 localStorage key、读取和保存逻辑从页面中抽成纯 helper，并校验 `reason` 只能是 `manual` 或 `restore-safety`，避免损坏缓存被误显示为手动备份；`tests/node/test-settings-api.mjs` 补充正常保存、非法 reason 和损坏 JSON 的断言。备份/恢复 Tauri 命令逻辑不变。配套验证命令：`node tests/node/test-settings-api.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单已出库状态浏览器 fallback 持久化测试补强：`tests/node/test-order-api-fallback.mjs` 的缓存订单重载场景补充 `deliveryNoteId` 断言，保护订单详情转列表摘要 helper 在重新加载后保留已出库状态。业务代码不变。配套验证命令：`node tests/node/test-order-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 商品归属浏览器 fallback 持久化测试补强：`tests/node/test-product-api-fallback.mjs` 增加带客户、商品和 `fallback-customer-products` 映射的缓存数据重载场景，断言重新导入产品 API 后按客户筛选仍能命中商品且 `assignedCustomerNames` 保持客户名称，保护商品归属 localStorage 读取口径。业务代码不变。配套验证命令：`node tests/node/test-product-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户库存出库单浏览器 fallback 持久化测试补强：`tests/node/test-inventory-api-fallback.mjs` 复用重新编译导入的库存 API 模块，补充客户库存出库单在重新加载后仍可读取额外收费快照的断言，保护既有 `customer-inventory-delivery-notes` localStorage 持久化口径。业务代码不变。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单出库单浏览器 fallback 持久化修复：`src/features/inventory/api/inventory-api.ts` 新增订单出库单 localStorage record map，创建订单出库单后保存，`getDeliveryNote` 读取前同步 storage，避免刷新或重新加载库存 API 后补打查询丢失；`tests/node/test-inventory-api-fallback.mjs` 补充重新编译导入模块后仍能读取出库单的断言。Tauri/Rust 真实出库单路径不变。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 出库单创建浏览器 fallback 订单状态同步修复：`src/features/inventory/api/inventory-api.ts` 创建订单出库单并更新 fallback 订单详情后派发 `order-manager:fallback-order-upserted`；`src/features/orders/api/orders-api.ts` 增加幂等 upsert 监听，并复用订单详情转列表摘要 helper，避免订单列表/详情内存态在同会话中仍显示未出库。`tests/node/test-order-api-fallback.mjs` 和 `tests/node/test-inventory-api-fallback.mjs` 补充外部 upsert 与出库单创建事件断言。Tauri/Rust 真实路径不变。配套验证命令：`node tests/node/test-order-api-fallback.mjs`、`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单 upsert 浏览器 fallback 库存数量同步修复：`src/features/inventory/api/inventory-api.ts` 在处理 `order-manager:fallback-order-upserted` 时读取 `fallback-order-inventory-stocks` 并复用库存数量匹配 helper，避免已有显式库存状态时事件同步把 `orderQuantity` 短暂重置为订单下单数量；`tests/node/test-inventory-api-fallback.mjs` 补充库存为 0 的订单收到 upsert 后仍保持 0 的断言。Tauri/Rust 真实库存路径不变。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单状态变化浏览器 fallback 库存同步修复：`src/features/inventory/api/inventory-api.ts` 处理 `order-manager:fallback-order-upserted` 时先移除同订单旧库存行，再按新订单状态决定是否加入，避免订单 fallback 从 `ordered` 更新为非下单状态时库存内存态残留；`tests/node/test-inventory-api-fallback.mjs` 补充状态回退事件断言。Tauri/Rust 真实库存路径不变。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 订单删除浏览器 fallback 库存同步修复：`src/features/orders/api/orders-api.ts` 删除订单成功后派发 `order-manager:fallback-order-deleted`，`src/features/inventory/api/inventory-api.ts` 监听后即时移除该订单的 fallback 订单库存行，避免浏览器预览同会话中删除订单后库存内存态短暂残留；`tests/node/test-order-api-fallback.mjs` 和 `tests/node/test-inventory-api-fallback.mjs` 补充删除事件断言。Tauri/Rust 真实订单和库存路径不变。配套验证命令：`node tests/node/test-order-api-fallback.mjs`、`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户删除浏览器 fallback 归属清理修复：`src/features/customers/api/customers-api.ts` 删除客户成功后派发 `order-manager:fallback-customer-deleted`，`src/features/products/api/products-api.ts` 监听后清理客户名称缓存、客户商品映射和商品上的 `assignedCustomerIds/assignedCustomerNames`，避免浏览器预览中删除客户后商品仍显示悬空归属；`tests/node/test-product-api-fallback.mjs` 补充删除事件断言。Tauri/Rust 真实删除路径不变。配套验证命令：`node tests/node/test-customer-api-fallback.mjs`、`node tests/node/test-product-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 商品浏览器 fallback 归属客户名同步修复：`src/features/products/api/products-api.ts` 抽出按客户 ID 解析归属客户名称的 helper，并在收到 `order-manager:fallback-customer-upserted` 时刷新已分配商品的 `assignedCustomerNames` 后保存，避免客户改名或导入事件后商品列表仍显示旧归属客户名；`tests/node/test-product-api-fallback.mjs` 补充客户名更新事件断言。Tauri/Rust 真实商品路径不变。配套验证命令：`node tests/node/test-product-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 客户浏览器 fallback 导入事件同步修复：`src/features/customers/api/customers-api.ts` 在批量导入客户写入本地 fallback 后逐个派发 `order-manager:fallback-customer-upserted`，与新增/更新客户保持一致，避免商品 fallback 已缓存客户名后无法感知后续导入客户；`tests/node/test-customer-api-fallback.mjs` 补充导入事件断言。Tauri/Rust 真实客户导入路径不变。配套验证命令：`node tests/node/test-customer-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 浏览器测试窗口事件能力继续补齐：`tests/node/test-utils.mjs` 的 `installBrowserTestWindow({ includeAddEventListener: true })` 新增 `removeEventListener`，让内存 window 的事件监听注册/移除更接近浏览器；`tests/node/test-shared-utils.mjs` 增加移除监听后只触发剩余监听的断言。只增强测试基础设施，不改变前端运行时代码或业务 fallback 行为。配套验证命令：`node tests/node/test-shared-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 桌面验收脚本帮助选项继续补齐：`scripts/desktop-acceptance.mjs` 的 usage 在 Options 中补充 `--run-id <id>` 和 `--manifest <path>`，与 prepare/verify 实际支持参数一致；`tests/node/test-operational-scripts.mjs` 改为支持多条帮助文案断言并覆盖这两个选项。验收数据生成、自动复核和真实库读取逻辑不变。配套验证命令：`node tests/node/test-operational-scripts.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 运维恢复脚本备份参数文案继续对齐：`scripts/restore-real-db.mjs` 的 usage 明确标出 `-b, --backup <path>`，与脚本实际支持的短别名一致；`tests/node/test-operational-scripts.mjs` 同步断言该帮助文案，避免后续只保留隐藏参数或文案漂移。恢复校验、dry-run 和真实库覆盖流程不变。配套验证命令：`node tests/node/test-operational-scripts.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 运维脚本帮助文案测试继续补强：`tests/node/test-operational-scripts.mjs` 不只确认 `--help`/`-h` 能输出 Usage，也断言帮助文案里显式包含 `-h, --help`，避免短帮助入口支持了但文案遗漏。脚本执行逻辑不变。配套验证命令：`node tests/node/test-operational-scripts.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 运维脚本帮助文案继续对齐：真实库备份、真实库恢复和桌面验收脚本的 usage 文案统一标明 `-h, --help` 帮助入口；只更新帮助输出，不改变参数解析、备份/恢复或桌面验收 prepare/verify 流程。配套验证命令：`node tests/node/test-operational-scripts.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 桌面验收脚本帮助入口继续补齐：`scripts/desktop-acceptance.mjs` 增加 `-h` 帮助别名，与真实库备份/恢复脚本的短帮助入口保持一致；`tests/node/test-operational-scripts.mjs` 同步覆盖桌面验收 `-h`。只调整帮助入口，不改变 prepare/verify 逻辑或真实库操作流程。配套验证命令：`node tests/node/test-operational-scripts.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 运维脚本入口测试继续补强：`tests/node/test-operational-scripts.mjs` 在原有 `--help` 和 Node 语法检查基础上，补充真实库备份/恢复脚本的 `-h` 短帮助参数断言；桌面验收脚本仍只按已约定的 `--help` 入口校验。脚本运行逻辑和真实库操作流程不变。配套验证命令：`node tests/node/test-operational-scripts.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页订单流水空状态继续统一：订单库存详情内“当前订单暂无流水”从纯文本提示改为 `EmptyState`，补充流水说明和图标；未出库订单提供就近“批量入库”动作，复用现有批量入库入口，已出库订单不显示操作按钮。查询、流水生成和库存提交逻辑不变。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页空状态动作继续补齐：公共库存和库存流水空状态增加“查看订单库存”动作，引导到已有订单库存操作入口；客户库存出库单和客户库存流水空状态增加“新增客户库存”动作，复用现有客户库存补录弹窗入口。只补 UI 引导按钮，不新增库存写入路径或改变查询/提交逻辑。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页合并出库单提交请求状态应用继续清理：合并出库单提交前清空旧错误的请求状态已在页面层收敛到 `applyMergeDeliveryNoteSubmitRequestState`；`createMergeDeliveryNoteSubmitRequestState` 仍保持纯状态 helper，提交校验、mutation reset 和预览生成流程不变。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页 rows-only 状态应用继续清理：客户库存出库明细备注更新后的 rows-only 写入已收敛到 `applyCustomerInventoryDeliveryRowsOnlyUpdateState`；客户库存补录删除明细行后的 rows-only 写入收敛到 `applyCustomerInventoryBatchRowsOnlyUpdateState`。新增行的函数式 updater、错误清理和业务校验保持不变。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页单字段状态应用继续清理：合并出库单分组更新后的 `customGroupsByDeliveryNoteId` 写入已收敛到 `applyMergeDeliveryNoteGroupUpdateState`；批量入库图片预览失败错误写入收敛到 `applyBatchOrderImagePreviewFailureState`；图片识别确认后的预览弹窗关闭状态收敛到 `applyBatchOrderImageRecognitionConfirmState`。文件读取、图片识别 mutate、分组业务规则和错误文案生成保持不变。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页选择类状态应用继续清理：合并出库单勾选状态返回的“写 errors + 写 deliveryNoteIds”已收敛到 `applyMergeDeliveryNoteSelectionState`；批量入库重复图片选择返回的“写 errors + 写 skippedImagePaths”已收敛到 `applyBatchOrderImageRecognitionDuplicateSelectionState`。分组单字段、图片预览、文件读取和 mutation reset 时机保持不变。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页订单出库单表单字段状态应用继续清理：订单出库单弹窗中表单字段修改后的“写 values + 写 errors”页面 setState 已收敛到 `applyDeliveryNoteFormFieldUpdateState`；字段错误清理后的“写 errors”收敛到 `applyDeliveryNoteFormErrorClearState`。出库明细、重量聚焦、提交校验、打印和 mutation reset 时机保持不变。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户库存出库表单字段状态应用继续清理：客户库存出库弹窗中普通出库信息字段修改后的“写 values + 写 errors”页面 setState 已收敛到 `applyCustomerInventoryDeliveryFormFieldUpdateState`；多价格组表单字段修改后的“写 priceGroupFormValues + 写 errors”收敛到 `applyCustomerInventoryDeliveryPriceGroupFormFieldUpdateState`。明细行、焦点跳转、提交校验和 mutation reset 时机保持不变。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页小型库存操作弹窗字段状态应用继续清理：公共库存调整、订单库存调整和公共库存转入订单弹窗中字段修改后的“写 values + 写 errors”页面 setState 已复用现有 `applyInventoryDialogState`、`applyOrderInventoryDialogState` 和 `applyTransferInventoryDialogState`；对应 update helper、提交校验和 mutation reset 时机保持不变。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户库存补录状态应用继续清理：客户历史库存补录/查看弹窗中客户切换后的“写 values + rows + errors”、普通表单字段修改后的“写 values + errors”、明细行字段/商品修改后的“写 rows + errors”页面 setState 已分别收敛到 `inventory-page.tsx` 的 `applyCustomerInventoryBatchCustomerUpdateState`、`applyCustomerInventoryBatchFormFieldUpdateState` 和 `applyCustomerInventoryBatchRowsUpdateState`；rows-only 新增/删除、费用自动带入、焦点跳转和 mutation reset 时机保持不变。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页批量入库明细状态应用继续清理：批量入库弹窗中单行数量修改、图片识别结果应用、填充建议数量和清空数量后的“写 rows + 写 errors”页面 setState 已收敛到 `inventory-page.tsx` 的 `applyBatchOrderRowsUpdateState`；批量入库备注修改后的“写 note + 写 errors”收敛到 `applyBatchOrderNoteUpdateState`。纯状态 helper、图片识别流程和 mutation reset 时机保持不变。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户库存出库明细状态应用继续清理：客户库存出库弹窗中全部出库、清空数量、批次分组修改和单行数量修改后的“写 rows + 写 errors”页面 setState 已收敛到 `inventory-page.tsx` 的 `applyCustomerInventoryDeliveryRowsUpdateState`；对应纯状态 helper 逻辑不变，mutation reset 仍留在页面事件处理里。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页订单出库单明细状态应用继续清理：订单出库单弹窗中单行数量/备注修改、全部出库和清空数量后的“写 rows + 写 errors”页面 setState 已收敛到 `inventory-page.tsx` 的 `applyDeliveryNoteRowsUpdateState`；`updateDeliveryNoteRowState` / `fillDeliveryNoteQuantityState` / `clearDeliveryNoteQuantityState` 的纯状态逻辑不变，mutation reset 仍留在页面事件处理里。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页出库单 form 错误文案应用继续清理：提交订单出库单的前置拦截文案、打印异常文案，以及读取/合并失败的错误对象转换，都统一经 `inventory-page.tsx` 的 `applyDeliveryNoteFormErrorMessage` / `applyDeliveryNoteFormError` 写入出库单 form 错误；`createDeliveryNoteFormErrorState` 的纯状态逻辑不变，业务校验和打印流程不变。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页合并出库单预览成功状态应用继续清理：合并出库单生成预览成功后，应用“清单张预览 + 写合并预览 + 关闭合并弹窗 + 打开打印预览”的页面 setState 已收敛到 `inventory-page.tsx` 的 `applyMergeDeliveryNotePreviewSuccessState`；`createMergeDeliveryNotePreviewSuccessState` 的纯状态逻辑不变，页面继续负责读取出库单、构建合并预览和错误提示。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页订单出库单创建成功状态应用继续清理：订单出库单创建成功后，应用“当前打印单 + 关闭创建弹窗 + 重置出库单表单/明细 + 打开打印预览”的页面 setState 已收敛到 `inventory-page.tsx` 的 `applyDeliveryNoteCreateSuccessState`；`createDeliveryNoteCreateSuccessState` 的纯状态逻辑不变，页面继续负责库存/订单刷新和成功提示。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户库存出库创建成功状态应用继续清理：客户库存出库单创建成功后，应用“当前打印单/合并单 + 关闭出库弹窗 + 清空批次勾选 + 重置出库弹窗 + 打开打印预览”的页面 setState 已收敛到 `inventory-page.tsx` 的 `applyCustomerInventoryDeliveryCreateSuccessState`；`createCustomerInventoryDeliveryCreateSuccessState` 的纯状态逻辑不变，页面继续负责客户库存刷新和成功提示。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页出库单错误状态应用继续清理：订单出库单补打、合并出库单预览和客户库存出库单补打读取失败时，应用“错误对象转出库单 form 错误”的重复逻辑已收敛到 `inventory-page.tsx` 的 `applyDeliveryNoteFormError`；`createDeliveryNoteFormErrorState` 的纯状态逻辑不变，页面继续负责各自 mutation 的请求和成功处理。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页出库单打印预览请求状态应用继续清理：订单出库单补打和客户库存出库单补打发起读取前，应用“清出库单错误 + 清当前合并预览”的重复 setState 已收敛到 `inventory-page.tsx` 的 `applyDeliveryNotePrintPreviewRequestState`；`createDeliveryNotePrintPreviewRequestState` 的纯状态逻辑不变，页面继续负责 mutation reset 和触发读取。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页出库单打印预览成功状态应用继续清理：订单出库单补打和客户库存出库单补打读取成功后，应用“当前单张/合并预览 + 打开打印预览”的重复 setState 已收敛到 `inventory-page.tsx` 的 `applyDeliveryNotePrintPreviewState`；`createDeliveryNotePrintPreviewSuccessState` 的纯状态逻辑不变，页面继续负责读取 mutation 和错误提示副作用。配套验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页订单出库单弹窗关闭状态继续清理：手动关闭订单出库单创建弹窗时的“关闭弹窗 + 清空出库单表单/明细/错误状态”已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createDeliveryNoteDialogCloseState`，订单出库单创建成功状态复用同一关闭状态并继续打开打印预览；`inventory-page.tsx` 继续负责 create delivery note mutation reset，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加关闭状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页合并出库单弹窗关闭状态继续清理：手动关闭合并出库单弹窗时的“关闭弹窗 + 清空选择/分组/错误状态”已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createMergeDeliveryNoteDialogCloseState`；`inventory-page.tsx` 继续负责 merge mutation reset，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加关闭状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页批量入库弹窗关闭状态继续清理：手动关闭批量入库弹窗时的“关闭弹窗 + 清空批量入库行/备注/错误/OCR 状态”已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createBatchOrderDialogCloseState`，批量入库成功状态复用同一关闭状态；`inventory-page.tsx` 继续负责批量入库和图片识别 mutation reset，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加关闭状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户库存批次弹窗关闭状态继续清理：新增/更新客户库存批次成功和关闭弹窗时的“关闭弹窗 + 清编辑批次 + 清空批次表单/明细/错误状态”已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createCustomerInventoryBatchDialogCloseState`；`inventory-page.tsx` 继续负责 mutation reset、客户库存刷新和成功提示，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加关闭状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页公共库存转订单弹窗关闭状态继续清理：公共库存转订单弹窗关闭和转入成功后的“关闭弹窗 + 清空转入表单/错误状态”已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createTransferInventoryDialogCloseState`；`inventory-page.tsx` 继续负责 mutation reset、库存刷新和成功提示，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加关闭状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页订单库存调整弹窗关闭状态继续清理：订单库存单行入库/出库/盘点弹窗关闭和调整成功后的“关闭弹窗 + 清空订单库存调整表单/错误状态”已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createOrderInventoryDialogCloseState`；`inventory-page.tsx` 继续负责 mutation reset、库存刷新和成功提示，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加关闭状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户库存盘点弹窗关闭状态继续清理：客户库存盘点弹窗关闭和盘点成功后的“关闭弹窗 + 清空盘点表单/错误状态”已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createCustomerInventoryAdjustDialogCloseState`；`inventory-page.tsx` 继续负责 mutation reset、客户库存刷新和成功提示，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加关闭状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页公共库存调整弹窗关闭状态继续清理：公共库存调整弹窗关闭和调整成功后的“关闭弹窗 + 清空表单/错误状态”已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createInventoryDialogCloseState`；`inventory-page.tsx` 继续负责 mutation reset、刷新库存和成功提示，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加关闭状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户库存出库弹窗关闭状态继续清理：关闭客户库存出库弹窗时的“关闭弹窗 + 清空出库表单/多计价组/明细状态”已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createCustomerInventoryDeliveryDialogCloseState`；`inventory-page.tsx` 继续负责 mutation reset，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加关闭状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户库存出库弹窗打开状态继续清理：打开客户库存出库弹窗时的“应用出库表单/多计价组/明细状态 + 打开弹窗”状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createCustomerInventoryDeliveryDialogOpenState`；`inventory-page.tsx` 继续负责 mutation reset、错误提示和无可出库批次分支，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加打开状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户库存批次弹窗打开状态继续清理：新增/查看客户库存批次弹窗时的“编辑批次状态 + 应用表单/明细状态 + 打开弹窗”状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createCustomerInventoryBatchDialogOpenState`；`inventory-page.tsx` 继续负责创建/更新 mutation reset 和读取批次副作用，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加新增和查看打开状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页批量入库弹窗打开状态继续清理：打开订单批量入库弹窗时的“按订单生成批量入库行 + 应用 OCR 默认状态 + 打开弹窗”状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createBatchOrderDialogOpenState`；`inventory-page.tsx` 继续负责批量入库和图片识别 mutation reset，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加打开状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户库存盘点弹窗打开状态继续清理：打开客户库存盘点弹窗时的“应用表单初始状态 + 打开弹窗”状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createCustomerInventoryAdjustDialogOpenState`；`inventory-page.tsx` 继续负责 mutation reset，默认盘点数量仍取当前剩余库存。配套 `tests/node/test-inventory-utils.mjs` 增加打开状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页公共库存转订单弹窗打开状态继续清理：打开公共库存转订单弹窗时的“应用表单初始状态 + 打开弹窗”状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createTransferInventoryDialogOpenState`；`inventory-page.tsx` 继续负责 mutation reset，公共库存可转建议数量逻辑不变。配套 `tests/node/test-inventory-utils.mjs` 增加打开状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页订单库存调整弹窗打开状态继续清理：打开订单库存调整弹窗时的“应用表单初始状态 + 打开弹窗”状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createOrderInventoryDialogOpenState`；`inventory-page.tsx` 继续负责 mutation reset，入库/出库建议数量逻辑不变。配套 `tests/node/test-inventory-utils.mjs` 增加打开状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页公共库存调整弹窗打开状态继续清理：打开公共库存调整弹窗时的“应用表单初始状态 + 打开弹窗”状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createInventoryDialogOpenState`；`inventory-page.tsx` 继续负责 mutation reset，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加打开状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页订单出库单弹窗打开状态继续清理：打开订单出库单创建弹窗时的“应用表单/明细初始状态 + 打开弹窗”状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createDeliveryNoteDialogOpenState`；`inventory-page.tsx` 继续负责 mutation reset 和已有出库单时转补打预览，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加打开状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页合并出库单提交请求状态继续清理：提交合并出库单前的“清空旧出库单错误”状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createMergeDeliveryNoteSubmitRequestState`；`inventory-page.tsx` 继续负责 `preventDefault`、mutation reset、同客户/数量校验和触发合并预览，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加提交请求状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页合并出库单弹窗打开状态继续清理：打开合并出库单弹窗时的“清当前单张/合并打印预览 + 应用默认选中出库单和分组状态 + 打开弹窗”状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createMergeDeliveryNoteDialogOpenState`；`inventory-page.tsx` 继续负责 mutation reset，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加打开状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户库存出库单创建成功状态继续清理：客户库存出库单创建成功后的“当前打印单/合并打印单 + 成功提示文案 + 关闭出库弹窗 + 清空批次勾选 + 重置出库表单 + 打开打印预览”状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createCustomerInventoryDeliveryCreateSuccessState`；`inventory-page.tsx` 继续负责 query invalidation 和成功通知副作用，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加单张和持久化合并单创建成功状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页订单出库单创建成功状态继续清理：订单出库单创建成功后的“当前打印单 + 关闭创建弹窗 + 重置表单 + 打开打印预览”状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createDeliveryNoteCreateSuccessState`；`inventory-page.tsx` 继续负责 query invalidation 和成功通知，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加创建成功状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页出库单打印预览请求前状态继续清理：订单出库单补打和客户库存出库单补打在读取前的“清空出库单错误 + 清空当前合并预览”状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createDeliveryNotePrintPreviewRequestState`；`inventory-page.tsx` 继续负责 mutation reset 和触发读取，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加请求前状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页出库单打印预览读取成功状态继续清理：订单出库单补打和客户库存出库单补打读取成功后的“选择单张/合并打印内容 + 打开打印预览”组合状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createDeliveryNotePrintPreviewSuccessState`；`inventory-page.tsx` 继续负责 mutation reset、读取请求和错误提示副作用，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加单张和持久化合并单成功状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页合并出库单预览成功状态继续清理：合并出库单生成预览成功后的“清单张预览、写合并预览、关闭合并弹窗、打开打印预览”状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createMergeDeliveryNotePreviewSuccessState`；`inventory-page.tsx` 继续负责读取出库单、构建合并预览和错误提示副作用，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加成功状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户库存批次弹窗应用状态继续清理：客户库存批次弹窗打开、关闭、创建成功和更新成功后的 form/rows/errors 应用状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createCustomerInventoryBatchDialogApplyState` 和 `createEmptyCustomerInventoryBatchDialogApplyState`；`inventory-page.tsx` 继续负责 mutation reset、notice、query invalidation、编辑批次和弹窗开关副作用。配套 `tests/node/test-inventory-utils.mjs` 增加空应用状态和从批次 values 生成应用状态断言。
+- 库存页出库单清空错误状态继续清理：订单出库单补打预览、合并出库单提交前、客户库存出库单补打预览的清空错误状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createEmptyDeliveryNoteFormErrorState`；`inventory-page.tsx` 继续负责 mutation reset 和读取副作用，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加空错误状态断言。
+- 库存页客户库存批次添加明细行状态继续清理：客户库存批次弹窗中添加明细行的 rows 状态对象已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `appendCustomerInventoryBatchRowState`；`inventory-page.tsx` 的按钮添加和回车追加统一调用命名 handler，并保留 functional updater 连续添加语义。配套 `tests/node/test-inventory-utils.mjs` 增加追加行状态断言。
+- 库存页出库单 form 错误状态继续清理：订单出库单、合并出库单和客户库存出库单的 form 错误状态对象已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createDeliveryNoteFormErrorState`；`inventory-page.tsx` 继续负责 mutation、打印和错误文案获取，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加 form 错误状态断言。
+- 库存页客户库存批次表单清错状态继续清理：客户库存批次表单单项错误清理状态对象已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `clearCustomerInventoryBatchFormErrorState`；`inventory-page.tsx` 保留 functional updater 连续更新语义，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加清错状态断言。
+- 库存页客户库存出库批次勾选状态继续清理：客户库存出库批次勾选/取消的状态对象已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `toggleCustomerInventoryDeliveryBatchSelectionState`；`inventory-page.tsx` 保留 functional updater 连续勾选语义，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加勾选状态断言。
+- 库存页合并出库单分组状态继续清理：合并出库单弹窗中分组说明更新的状态对象已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `updateMergeDeliveryNoteGroupLabelState`；`inventory-page.tsx` 不再在 `setMergeDeliveryNoteGroups` 内联 record 更新，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加分组状态断言。
+- 库存页客户库存批次删除明细行状态继续清理：客户库存批次弹窗中删除明细行的 rows 状态对象已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `removeCustomerInventoryBatchRowState`；`inventory-page.tsx` 不再内联数组过滤，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加删除行状态断言。
+- 库存页客户库存出库行备注状态继续清理：客户库存出库弹窗中单行备注修改的 helper 返回值统一为 `{ rows }` 状态对象；`inventory-page.tsx` 不再在 `setCustomerInventoryDeliveryRows` 内联数组转换，行为不变。配套 `tests/node/test-inventory-utils.mjs` 更新备注状态断言。
+- 库存页客户库存批次加工费带出状态继续清理：自动补空加工费、备注变化刷新加工费、计价含税切换刷新加工费的页面状态对象已抽到 `src/features/inventory/lib/inventory-dialog-state.ts`；`inventory-page.tsx` 继续负责查客户和计算费用快照，并保留 functional updater 连续更新语义。配套 `tests/node/test-inventory-utils.mjs` 增加 3 类状态断言。
+- 库存页批量入库 OCR 识别原文开关状态继续清理：识别原文展开/收起的纯布尔翻转已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createBatchOrderImageRawTextToggleState`；`inventory-page.tsx` 改为命名 handler，保留 React functional updater 的连续点击语义。配套 `tests/node/test-inventory-utils.mjs` 增加开关状态断言。
+- 库存页批量入库 OCR 图片预览旋转状态继续清理：预览弹窗中按当前图片下标旋转角度的状态对象已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createBatchOrderImagePreviewRotationState`；`inventory-page.tsx` 继续只负责按钮事件和写回 React 状态。配套 `tests/node/test-inventory-utils.mjs` 增加旋转状态断言。
+- 库存页批量入库 OCR 图片预览失败状态继续清理：读取图片预览失败时“写错误到 form”的纯状态转换已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createBatchOrderImagePreviewFailureState`；`inventory-page.tsx` 继续负责文件选择、读取预览和错误文案格式化。配套 `tests/node/test-inventory-utils.mjs` 增加预览失败状态断言。
+- 库存页批量入库 OCR 重复图片选择状态继续清理：选择的图片全部已识别过时，“写重复提示错误 + 更新跳过图片路径”的纯状态组合已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createBatchOrderImageRecognitionDuplicateSelectionState`；`inventory-page.tsx` 继续负责文件选择和读取图片预览等副作用。配套 `tests/node/test-inventory-utils.mjs` 增加重复选择状态断言。
+- 库存页订单出库单重量聚焦清错状态继续清理：重量输入手动聚焦时“清当前重量错误”的纯状态转换已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `clearDeliveryNoteFormFieldErrorState`；`inventory-page.tsx` 继续保留 `keepDeliveryNoteErrorOnFocusRef`，避免提交后自动聚焦错误字段时立即清错。配套 `tests/node/test-inventory-utils.mjs` 增加清字段错误状态断言。
+- 库存页合并出库单勾选状态继续清理：勾选/取消出库单时“更新选中 ID + 写入同客户校验错误”的应用状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createMergeDeliveryNoteSelectionApplyState`；`inventory-page.tsx` 不再在 `setMergeDeliveryNoteIds` updater 内嵌套 `setDeliveryNoteErrors`。配套 `tests/node/test-inventory-utils.mjs` 增加成功勾选和跨客户失败断言。
+- 库存页客户库存盘点弹窗字段状态继续清理：盘点弹窗“字段更新 + 清当前字段错误”已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `updateCustomerInventoryAdjustFormFieldState`；`customer-inventory-adjust-dialog.tsx` 不再接收 `onClearError`。配套 `tests/node/test-inventory-utils.mjs` 增加盘点字段状态断言。
+- 库存页客户历史库存批次客户切换状态继续清理：切换客户时“按客户默认计价和备注带出加工费 + 清空已选商品行 + 清 `customerId` 错误”的纯状态组合已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `updateCustomerInventoryBatchCustomerState`；`inventory-page.tsx` 继续负责查客户和计算加工费。配套 `tests/node/test-inventory-utils.mjs` 增加客户切换状态断言。
+- 库存页客户历史库存批次弹窗字段状态继续清理：历史下单日期、铝锭价和动态加工费字段的“字段更新 + 清当前字段错误”已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `updateCustomerInventoryBatchFormFieldState`；`customer-inventory-batch-dialog.tsx` 不再接收通用 `onClearError`，历史日期聚焦清错改为专用回调。配套 `tests/node/test-inventory-utils.mjs` 增加批次表单字段状态断言。
+- 库存页客户库存出库弹窗字段状态继续清理：普通字段、多计价组字段和批次分组的“字段更新 + 清当前字段错误”已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `updateCustomerInventoryDeliveryFormFieldState` / `updateCustomerInventoryDeliveryPriceGroupFormFieldState` / `updateCustomerInventoryDeliveryGroupLabelState`；`inventory-page.tsx` 继续负责 setState，弹窗组件不再接收 `onClearError`。配套 `tests/node/test-inventory-utils.mjs` 增加客户库存出库字段状态断言。
+- 库存页订单出库单表单字段状态继续清理：订单出库单弹窗里“字段更新 + 清当前字段错误”的纯状态组合已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `updateDeliveryNoteFormFieldState`；`inventory-page.tsx` 继续负责 mutation reset 副作用。配套 `tests/node/test-inventory-utils.mjs` 增加出库单表单字段状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页批量入库图片识别应用状态继续清理：点击“应用识别结果”时“无可应用匹配则写 form 错误，有匹配则应用数量并清错误”的纯状态分支已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createBatchOrderImageRecognitionApplyState`；`inventory-page.tsx` 继续负责 mutation reset 副作用。配套 `tests/node/test-inventory-utils.mjs` 增加有匹配/无匹配断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页批量入库图片识别确认状态小收口：确认 OCR 图片预览时“关闭预览弹窗 + 有图片才组装识别 request”的纯状态判断已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createBatchOrderImageRecognitionConfirmState`；`inventory-page.tsx` 继续负责触发识别 mutation。配套 `tests/node/test-inventory-utils.mjs` 增加有图/无图确认状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页小表单字段状态继续清理：公共库存调整、订单库存调整和公共库存转订单的“字段更新 + 清当前字段错误”组合状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `updateInventoryFormFieldState`、`updateOrderInventoryFormFieldState` 和 `updateTransferInventoryFormFieldState`；`inventory-page.tsx` 只保留应用状态和 mutation reset 副作用。配套 `tests/node/test-inventory-utils.mjs` 增加三类字段状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`。
+- 桌面验收脚本补充批量入库 OCR 人工抽查：复查 `docs/desktop-acceptance.md` 和 `scripts/desktop-acceptance.mjs` 后确认现有自动复核覆盖普通批量入库、订单出库、客户库存单批次/合并出库和备份恢复，但没有提示走“识别图片/预览/旋转/OCR 原文/重复图片跳过”路径；本轮在生成的 runbook 和桌面验收文档中增加可选 OCR 人工抽查步骤，并明确抽查后关闭弹窗、不确认入库，普通批量入库仍作为自动复核路径，避免复核依赖图片质量和 macOS Vision 环境。本轮验证命令：`node --check scripts/desktop-acceptance.mjs`、`CI=true pnpm run desktop:acceptance -- prepare --run-id 20260705000100`、`node tests/node/test-operational-scripts.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页批量入库图片预览状态应用小收口：阶段性复查后没有继续抽文件选择/读取预览等副作用，只把图片预览弹窗的 `imagePreviews`、`imagePreviewIndex`、`imagePreviewOpen` 三项页面状态集中到 `inventory-page.tsx` 的 `applyBatchOrderImagePreviewDialogState` 应用函数；`createBatchOrderImagePreviewDialogState` 的纯状态断言沿用现有 `tests/node/test-inventory-utils.mjs` 覆盖，业务行为不变。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页批量入库 OCR 成功状态应用继续清理：图片识别成功后的已识别路径去重、跳过路径、原文追加、匹配结果追加和部分失败错误文案应用，已改为由 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `mergeBatchOrderImageRecognitionSuccessState` 聚合后在 `inventory-page.tsx` 一次性应用；页面继续负责调用识别 mutation 和图片预览流程。配套 `tests/node/test-inventory-utils.mjs` 增加完全成功时清空 OCR 错误的边界断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页批量入库弹窗成功/关闭状态继续清理：批量入库弹窗打开、关闭和提交成功后的 rows/note/errors/OCR 预览、已识别路径、识别结果和原文开关状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createBatchOrderDialogApplyState`、`createEmptyBatchOrderDialogApplyState` 和 `createBatchOrderSuccessDialogState`；`inventory-page.tsx` 继续负责 mutation reset、notice、query invalidation 和弹窗开关副作用。配套 `tests/node/test-inventory-utils.mjs` 增加打开应用状态、空应用状态和成功状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页小弹窗打开/关闭状态应用继续清理：公共库存调整、订单库存调整、公共库存转订单和客户库存盘点的打开初始化、关闭清空和成功后清空状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `create*DialogApplyState` / `createEmpty*DialogApplyState` helper；`inventory-page.tsx` 继续负责 mutation reset、notice、query invalidation 和弹窗开关副作用。配套 `tests/node/test-inventory-utils.mjs` 增加四类小弹窗打开应用状态和空应用状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页合并出库单弹窗状态应用继续清理：合并出库单打开时“默认选中当前出库单 + 清错误”、关闭时“清空选择/分组 + 清错误”的应用状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createMergeDeliveryNoteDialogApplyState` 和 `createEmptyMergeDeliveryNoteDialogApplyState`；`inventory-page.tsx` 继续负责 mutation reset、当前预览单清理和弹窗开关副作用。配套 `tests/node/test-inventory-utils.mjs` 增加打开应用状态和空应用状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页订单出库单弹窗状态继续清理：订单出库单打开、关闭和创建成功后的 form/rows/errors/打印预览状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createDeliveryNoteDialogValues`、`createDeliveryNoteDialogApplyState`、`createEmptyDeliveryNoteDialogApplyState` 和 `createDeliveryNoteSuccessDialogState`；`inventory-page.tsx` 继续负责 mutation reset、query invalidation、notice 和当前打印单内容。配套 `tests/node/test-inventory-utils.mjs` 增加空状态、从订单组生成弹窗状态、应用状态和成功状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户库存出库创建成功状态继续清理：客户库存出库单创建成功后关闭弹窗、清空批次勾选、重置出库弹窗状态并打开打印预览的 UI 状态片段已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createCustomerInventoryDeliverySuccessDialogState`；`inventory-page.tsx` 继续负责 query invalidation、notice 和当前打印单内容。配套 `tests/node/test-inventory-utils.mjs` 增加成功状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户库存出库弹窗状态应用继续清理：客户库存出库弹窗打开、关闭和创建成功后的“应用弹窗 values + 清错误”流程已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createCustomerInventoryDeliveryDialogApplyState` 和 `createEmptyCustomerInventoryDeliveryDialogApplyState`；`inventory-page.tsx` 继续负责弹窗开关、notice、mutation reset 和打印预览。配套 `tests/node/test-inventory-utils.mjs` 增加空应用状态和从有效弹窗 values 生成应用状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户历史库存批次弹窗初始化继续清理：新增/查看/关闭客户库存批次弹窗时的表单默认值和明细默认行状态已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createEmptyCustomerInventoryBatchDialogValues` 和 `createCustomerInventoryBatchDialogValuesFromBatch`；`inventory-page.tsx` 继续负责 mutation reset、编辑批次状态和弹窗开关。配套 `tests/node/test-inventory-utils.mjs` 增加空弹窗状态和从批次生成弹窗状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户历史库存批次明细和合并分组状态继续清理：客户库存批次明细商品选择时“应用商品 + 清当前行商品错误”、明细字段更新时“更新字段 + 清当前行字段错误”，以及合并出库单自定义分组更新已抽到 `src/features/inventory/lib/inventory-dialog-state.ts`；`inventory-page.tsx` 保留查商品、聚焦和 mutation 编排。配套 `tests/node/test-inventory-utils.mjs` 增加行字段清错、商品选择清错和合并分组不可变更新断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户历史库存批次主表状态继续清理：客户库存批次表单字段更新、单项错误清理、客户切换带出默认计价和加工费、计价方式切换刷新加工费已抽到 `src/features/inventory/lib/inventory-dialog-state.ts`；`inventory-page.tsx` 继续负责查客户、清空商品行和弹窗副作用，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加字段更新、清错、客户切换和计价切换状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户库存出库错误聚焦继续清理：客户库存出库提交失败后的首个错误聚焦目标推导已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `getFirstInvalidCustomerInventoryDeliveryFocusTarget`，覆盖经手人、单/多计价方案重量、额外收费、批次分组、明细行和 form 错误；`inventory-page.tsx` 只负责执行 DOM 聚焦，`customer-inventory-delivery-dialog.tsx` 为批次分组输入补充稳定 `data-*` 定位属性，业务校验和 payload 不变。配套 `tests/node/test-inventory-utils.mjs` 增加焦点目标断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户库存出库明细状态继续清理：客户库存出库弹窗中单行数量更新并清当前行错误、备注更新、全部出库并清明细错误、清空数量并清明细错误已抽到 `src/features/inventory/lib/inventory-dialog-state.ts`；`inventory-page.tsx` 继续负责 mutation reset、弹窗编排、聚焦和提交流程，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加客户库存出库行更新、全部出库和清空状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页订单出库单明细状态继续清理：订单出库单弹窗中明细行数量/备注更新并清当前行错误、全部出库并清明细错误、清空数量并清明细错误已抽到 `src/features/inventory/lib/inventory-dialog-state.ts`；`inventory-page.tsx` 继续负责 mutation reset、错误聚焦和提交流程，行为不变。配套 `tests/node/test-inventory-utils.mjs` 增加行更新、全部出库和清空状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页批量入库普通表单状态继续清理：批量入库弹窗中单行数量更新并清行错误、备注更新并清表单错误、填入默认入库/清空数量并清错误，以及提交前未选订单校验和 payload 组装已抽到 `src/features/inventory/lib/inventory-dialog-state.ts`；`inventory-page.tsx` 继续负责 mutation reset、弹窗流程和触发提交。配套 `tests/node/test-inventory-utils.mjs` 增加数量/备注状态更新、填默认/清空状态和提交状态断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页批量入库 OCR 状态继续清理：OCR 默认 UI 状态、图片预览弹窗状态、识别成功后的已识别路径去重、原文/匹配结果追加和部分失败错误文案已抽到 `src/features/inventory/lib/inventory-dialog-state.ts`；`inventory-page.tsx` 继续负责文件选择、读取图片预览、调用识别 mutation 和弹窗开关副作用。配套 `tests/node/test-inventory-utils.mjs` 增加默认 OCR 状态、预览状态、路径合并、原文/匹配追加、失败文案和完整成功状态合并断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页小表单状态继续清理：公共库存调整、订单库存调整、公共库存转订单和客户库存盘点的字段更新与单项错误清理已抽到 `src/features/inventory/lib/inventory-dialog-state.ts`，`inventory-page.tsx` 只保留对应 mutation reset 和弹窗编排；配套 `tests/node/test-inventory-utils.mjs` 增加四类表单的不可变字段更新和定向清错断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页弹窗状态继续清理：客户库存出库批次勾选、出库单表单字段更新、客户库存多计价组表单字段更新和出库单单项错误清理已抽到 `src/features/inventory/lib/inventory-dialog-state.ts`，`inventory-page.tsx` 只保留 React setState、mutation reset 和聚焦等副作用编排；配套 `tests/node/test-inventory-utils.mjs` 增加勾选去重/取消、表单字段不可变更新、错误清理和价格组默认值合并断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页合并出库单弹窗状态初始化继续清理：合并出库单弹窗打开/关闭时的 `deliveryNoteIds` 和自定义分组默认值已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `createMergeDeliveryNoteDialogValues` 和 `defaultMergeDeliveryNoteDialogValues`，`inventory-page.tsx` 只负责 mutation reset、错误清理和弹窗开关副作用；配套 `tests/node/test-inventory-utils.mjs` 增加默认值和打开时默认选中当前出库单断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页合并出库单相关清理阶段性收口：合并出库单弹窗默认选中、同客户选择校验、至少两张提交校验、已读取出库单后的同客户/分组必填校验、`HDyyyyMMdd` 合并预览单构建，以及客户库存出库单单张/持久化合并补打预览状态，已分别抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 和 `src/features/inventory/lib/inventory-utils.ts`；`inventory-page.tsx` 只保留弹窗状态、出库单读取、mutation 触发和错误展示。阶段性复查后将“至少 2 张出库单”改为按有效出库单组数量判断，避免传入失效 ID 时 helper 误判通过；配套 `tests/node/test-inventory-utils.mjs` 增加选择、预览构建、补打预览和失效 ID 边界断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页订单库存主视图 UI 已拆到 `src/features/inventory/components/order-inventory-view.tsx`；`inventory-page.tsx` 继续负责订单库存筛选、选中订单状态、弹窗打开、出库单读取和 mutation 编排，订单卡片、订单明细、当前订单流水和按钮禁用行为保持不变。本轮验证命令：`CI=true pnpm run build`、`git diff --check`。
+- 库存页合并出库单弹窗和出库单打印预览弹窗 UI 已分别拆到 `src/features/inventory/components/merge-delivery-note-dialog.tsx`、`src/features/inventory/components/delivery-note-print-preview-dialog.tsx`；`inventory-page.tsx` 继续负责出库单读取、合并单构建、打印命令、错误状态和 mutation，业务行为不变。本轮验证命令：`CI=true pnpm run build`、`git diff --check`。
+- 库存页订单库存单行调整弹窗和公共库存调整弹窗 UI 已分别拆到 `src/features/inventory/components/order-inventory-adjust-dialog.tsx`、`src/features/inventory/components/public-inventory-adjust-dialog.tsx`；`inventory-page.tsx` 继续负责表单状态、错误清理、打开关闭和提交 mutation，业务行为不变。本轮验证命令：`CI=true pnpm run build`、`git diff --check`。
+- 库存页订单批量入库弹窗 UI 已拆到 `src/features/inventory/components/batch-order-adjust-dialog.tsx`；`inventory-page.tsx` 继续负责弹窗打开/关闭、OCR 状态、备注/数量状态、错误清理、回车聚焦和提交 mutation，业务行为不变。本轮验证命令：`CI=true pnpm run build`、`git diff --check`。
+- 库存页公共库存转入订单弹窗 UI 已拆到 `src/features/inventory/components/transfer-inventory-dialog.tsx`；`inventory-page.tsx` 继续负责弹窗打开/关闭、表单状态、错误清理和提交 mutation，业务行为不变。本轮验证命令：`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户库存盘点弹窗 UI 已拆到 `src/features/inventory/components/customer-inventory-adjust-dialog.tsx`；`inventory-page.tsx` 继续负责弹窗打开/关闭、表单状态、错误清理和提交 mutation，业务行为不变。本轮验证命令：`CI=true pnpm run build`、`git diff --check`。
+- 客户历史库存出库/合并出库弹窗接口清理：`customer-inventory-delivery-dialog.tsx` 不再直接接收页面 `setState`，改为 `onFormValueChange`、`onPriceGroupFormValueChange`、`onRowQuantityChange`、`onGroupLabelChange` 等语义化回调；`inventory-page.tsx` 继续负责状态更新和错误清理，业务行为不变。本轮验证命令：`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户历史库存出库/合并出库弹窗 UI 已拆到 `src/features/inventory/components/customer-inventory-delivery-dialog.tsx`；`inventory-page.tsx` 继续负责弹窗打开、派生数据、回车聚焦函数、清空/全部出库和提交 mutation 编排，业务行为不变。本轮验证命令：`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户历史库存批次弹窗 UI 已拆到 `src/features/inventory/components/customer-inventory-batch-dialog.tsx`；`inventory-page.tsx` 继续负责弹窗状态、校验、费用带出、商品选择和提交编排，并把拆分后的复杂回调收敛为命名 handler，业务行为不变。本轮验证命令：`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户历史库存批次加工费带出继续清理：覆盖五类加工费、只补空的可见加工费、备注变化时刷新加工费并写入备注已抽到 `src/features/inventory/lib/inventory-dialog-state.ts`；`inventory-page.tsx` 的客户切换、计价方式切换、备注变化和自动补费用 effect 改为调用 helper，页面保留查客户、清商品和清错误等事件编排。配套 `tests/node/test-inventory-utils.mjs` 增加费用覆盖、只补空和备注刷新断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户历史库存批次明细行状态继续清理：添加明细行、删除明细行、更新长度/颜色/数量/备注，以及按行应用商品选择已抽到 `src/features/inventory/lib/inventory-dialog-state.ts`；`inventory-page.tsx` 不再内联这些 `map/filter` 状态转换，只保留事件编排和聚焦。配套 `tests/node/test-inventory-utils.mjs` 增加行增删、字段更新和按 index 应用商品断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 库存页客户历史库存批次明细继续清理：清空商品选择、应用商品选择、明细行回车跳转/追加行的状态推导已抽到 `src/features/inventory/lib/inventory-dialog-state.ts`，页面只负责触发状态更新和执行 DOM 聚焦；配套 `tests/node/test-inventory-utils.mjs` 增加清商品、选商品和下一焦点目标断言。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 桌面验收脚本扩展客户库存场景：`scripts/desktop-acceptance.mjs` 的 prepare runbook 增加客户库存单批次出库、不同价格批次合并出库和列表类型人工检查；verify 增加 SQLite 自动复核单批次单号 `批次号-01`、合并单号 `客户首字母-CK日期-01`、合并单关联两个批次、两个计价方案重量以及出库后剩余库存。`docs/desktop-acceptance.md` 同步更新验收步骤和复核口径。本轮验证命令：`node --check scripts/desktop-acceptance.mjs`、`CI=true pnpm run desktop:acceptance -- prepare --run-id 20260703000102`。
+- 库存页继续清理：公共库存调整、订单库存入库/出库/盘点、公共库存转订单、客户库存盘点和客户库存批次查看/编辑的默认状态与弹窗初始化已抽到 `src/features/inventory/lib/inventory-dialog-state.ts`；订单库存入库/出库/盘点提交校验和 payload 组装也抽为 `collectOrderInventoryAdjustmentSubmitState`，页面只保留弹窗编排与 mutation 调用，行为不变。配套 `tests/node/test-inventory-utils.mjs` 覆盖默认值、初始化和提交校验。本轮验证命令：`node tests/node/test-inventory-utils.mjs`、`CI=true pnpm exec tsc --noEmit`、`CI=true pnpm run build`、`git diff --check`。
+- 客户库存出库单列表新增类型标识：独立“客户库存出库单”区域按关联批次数显示 `单批次` 或 `合并` 标签，帮助区分不带 `CK` 的单批次出库单号和带 `CK` 的合并出库单号；只调整列表展示，不改变编号生成、保存、搜索或补打逻辑。本轮验证命令：`CI=true pnpm run build`、`git diff --check`。
+- 客户库存合并出库主单号统一为两位流水：单批次客户库存出库继续使用 `批次号-01`，合并客户库存出库使用 `客户拼音首字母-CKYYYYMMDD-01`；价格组和明细内部 ID 仍保留三位流水。浏览器 fallback 与 Tauri 后端规则已对齐，并补充对应断言。本轮验证命令：`cargo test --manifest-path src-tauri/Cargo.toml customer_inventory_delivery_note_id_increments_within_batch`、`CI=true pnpm run test:inventory-api-fallback`、`CI=true pnpm run build`、`git diff --check`。
+- 客户历史库存出库弹窗键盘流转补齐：单计价和多计价方案下，`经手人`、`收费名称`、`收费金额`、重量、出库明细和备注都支持回车按当前业务顺序跳到下一项；多计价方案每个价格组的额外收费字段接入独立焦点定位，配套清理了重复的明细/备注落点判断。本轮验证命令：`git diff --check`、`CI=true pnpm run build`。
+- 本次代码清理：新增 `src/lib/browser-runtime.ts`，统一前端 Tauri 运行时判断、浏览器 fallback 的 localStorage JSON/数组/Map 读写；客户、商品、订单、库存、设置、CSV 导出和相关页面已改为共用 helper，减少重复的 `__TAURI_INTERNALS__` 判断和手写 JSON 解析，业务行为不变。
+- 库存页持续清理：订单库存分组/筛选/统计、客户历史库存出库分组/计价方案/重量字段推导，以及客户库存出库弹窗初始化/打开校验已抽到 `src/features/inventory/lib/inventory-utils.ts` 和 `src/features/inventory/lib/inventory-dialog-state.ts`；`inventory-page.tsx` 更集中于页面状态编排，配套 `tests/node/test-inventory-utils.mjs` 覆盖核心派生规则。
+- 库存页客户历史库存批次表单继续清理：客户库存明细行类型、必需加工费类别、分类支数、总支数和理论重量计算已抽到 `src/features/inventory/lib/inventory-utils.ts`，页面只负责展示和表单交互，行为不变。
+- 库存页客户历史库存批次提交继续清理：金额解析、明细行校验、必需加工费校验和创建/更新 payload 组装已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `collectCustomerInventoryBatchSubmitState`，页面提交函数只负责调用 helper 和触发 mutation。
+- 库存页订单出库单提交继续清理：重量解析、额外收费校验、出库行数量/库存/颜色冲突校验和 `CreateDeliveryNotePayload` 组装已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `collectDeliveryNoteSubmitState`，页面只保留订单前置判断、错误聚焦和 mutation 调用。
+- 库存页客户历史库存出库提交继续清理：经手人、出库行数量/库存/颜色冲突/分组校验、按计价方案拆单、重量和额外收费校验，以及 `CreateCustomerInventoryDeliveryNotePayload` 组装已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `collectCustomerInventoryDeliverySubmitState`，页面只保留批次前置判断、错误写回和 mutation 调用。
+- 库存页订单出库单错误聚焦继续清理：重量/额外收费/明细行/form 错误的首个聚焦目标推导已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `getFirstInvalidDeliveryNoteFocusTarget`，页面只负责执行 DOM 聚焦。
+- 库存页小表单提交继续清理：公共库存调整、客户库存盘点和公共库存转订单的数量解析、边界校验和 payload 组装已抽到 `src/features/inventory/lib/inventory-dialog-state.ts` 的 `collectInventoryAdjustmentSubmitState`、`collectCustomerInventoryAdjustmentSubmitState`、`collectTransferInventorySubmitState`。
+- 本轮浏览器 runtime 清理验证命令：`CI=true pnpm run check`、`CI=true pnpm run build`、`cargo check` 均通过。
+- 新建订单客户从手输改为客户列表选择。
+- 选择客户后显示客户名称，并自动带出客户地址。
+- 客户选择框保持原输入框宽度。
+- 客户资料新增含税/不含税下的断桥、喷涂、坯料、氧化、电泳五类加工费；新建/编辑客户弹窗中，加工费错误提示显示在输入框内，文案为“只能输入数字”。
+- 客户手机号允许为空；填写非法格式时，输入框内提示“请输入正确的手机号”。
+- 客户资料中的加工费已接入订单快照：订单按“计价是否含税”保存断桥、喷涂、坯料、氧化、电泳五类加工费中的一组。
+- 所有下拉选择支持清空，聚焦样式统一为普通输入框聚焦样式。
+- 订单保存 payload 已包含 `customerId`。
+- 后端订单结构已接入 `customer_id`。
+- 新建订单未选择客户时，订单明细商品选择位置显示“请先选择客户”，不使用额外弹窗。
+- 新建订单客户列表为空时，客户选择框显示红色“请先添加客户”；已选客户无商品时，订单明细商品选择框显示红色“请先添加客户商品”。
+- 新建订单草稿快照用于判断未保存状态。
+- 订单明细数量默认值已从 `1` 改为空。
+- 订单信息新增铝锭价、计价是否含税；五类加工费不在订单界面显示，但会按是否含税保存到订单快照，供后续出库使用。
+- 库存模块新增：
+  - `inventory_stocks`
+  - `inventory_movements`
+  - `list_inventory`
+  - `adjust_inventory`
+- 商品资料调整为全局商品库，新增 `customer_products` 多对多关系。
+- 商品导入不再要求选择客户；导入后在商品页勾选商品并批量分配客户。
+- 商品和客户列表都支持批量导出，导出范围按当前搜索/筛选结果，不只导出当前页。
+- 客户列表支持批量导入 CSV/XLSX/XLS，导入前预览并校验客户名称、默认计价和含税/不含税各五项加工费；特殊计价关键词和特殊含税/不含税五项加工费支持批量导入导出，导入列可选。
+- 订单明细商品选择已按订单客户过滤。
+- 新建/编辑订单页新增订单明细导入和模板下载；导入预览支持 CSV/XLSX/XLS，按商品名称、长度、颜色、数量、备注写入草稿明细；导出明细也归到订单明细卡片操作区。
+- 商品列表新增归属客户筛选、归属状态筛选；概览卡片跟随筛选结果变化。
+- 商品列表的全选按当前筛选结果跨页选择，筛选变化后自动清空选择。
+- 商品行编辑弹窗集成客户归属维护，一个商品可归属多个客户。
+- 已移除商品批量删除、清空商品及相关前后端 API/命令引用。
+- 商品分配客户按钮无选择时禁用，并提示“请先选择商品”。
+- 商品分配客户弹窗说明为“将选择的 XX 条商品加入客户商品列表。”
+- 商品分配客户弹窗在客户列表为空时提示“当前客户列表为空，请新建客户后再分配。”
+- 列表删除按钮统一使用 `ghost-destructive` 视觉样式。
+- 后端商品筛选 SQL 已合并为 `PRODUCT_FILTER_SQL`，`list_products` 和 `list_product_ids` 共用筛选条件。
+- 已撤回“下单扣库存”的通用商品逻辑：后续应做独立的生产入库、发货出库、余量转公共库存流程。
+- 订单编号生成规则已调整为 `ALUyyyyMMddNNN`，例如 `ALU20260527001`，不再使用 `SO` 前缀和中间横线；新建订单编号日期跟随页面下单日期，保存草稿和下单保持一致。
+- 订单列表增加铝锭价、计价是否含税、出库状态展示，并优化字段间距和横向滚动。
+- 客户默认计价是否含税为必填；客户列表会拦截默认计价对应加工费未设置的情况。
+- 新建订单会按客户默认计价带出计价是否含税；如果选中的计价方式缺少加工费，会提示不能选择。
+- 订单下单后初始化订单库存；库存页订单库存默认打开并排在第一个选项卡。
+- 订单库存 UI 调整为左侧订单卡片、右侧订单明细，统计栏参考新建订单商品明细底部统计样式。
+- 订单库存支持颜色、长度维度；表头显示“长度(mm)”并优化字段间距。
+- 新增公共库存转入订单库存能力。
+- 公共库存已从单商品库存调整为“模具编号/商品 + 长度 + 颜色”维度；公共库存列表显示商品名称、模具编号、长度、颜色、当前库存、最近流水备注、最近调整。
+- 公共库存调整入口已收敛到现有公共库存行的“调整”按钮；弹窗顶部只展示当前行信息，类型选择显示中文“入库 / 出库 / 盘点”。
+- 订单库存的“公共库存可转”已改为同模具编号/商品、同长度、同颜色三项匹配；出库剩余转公共库存时保留原长度和颜色。
+- 库存流水表新增订单/出库单、规格信息；当前订单库存区域新增当前订单流水表，表头固定、滚动条隐藏并用底部渐隐提示可继续滚动。
+- 新增出库单流程：从当前订单库存创建出库单，支持录入断桥重量、喷涂重量、坯料重量，出库后预览打印。
+- 新建出库单新增“计价方式”选择，默认继承订单计价方式，可切换含税/不含税后按客户当前对应价格组保存出库单快照。
+- 出库采用当前分批方案：允许多次部分出库，未出余额保留；首次后锁定入库/调整/公共转入，余额仅在人工选择转公共或转客户时一次性转移并完结。
+- 出库单创建后支持查看/补打；已出库订单在订单列表和库存订单卡片显示“已出库”。
+- 出库单打印改为 A4 纵向版式，隐藏重复的出库单号，只保留订单编号。
+- 出库单打印改为显式分页，预览区一页一张 A4 纵向纸，每页 36 条明细；系统打印版式压紧表格和货款区域，并保留顶部边距。
+- 出库单主表新增铝锭价、计价是否含税、断桥/喷涂/坯料/氧化/电泳加工费快照；出库单明细新增下单数量，不再保存订单明细理论预估重量。
+- 客户价格模型已从单一含税/不含税加工费调整为含税 5 项、不含税 5 项；客户列表只展示当前默认计价方式下已设置的加工费摘要；客户资料不强制 10 项填满，下单时按订单明细实际颜色分类校验对应加工费。
+- 出库单打印明细新增下单数量列；模具编号列居中并加宽，长度和数量列右对齐。
+- 出库单统计调整为：表格底部显示商品总数、断桥/喷涂/坯料/氧化/电泳支数和数量合计；表格下方显示非 0 重量项和重量合计；货款大写/小写独立显示在统计区和备注之间。
+- 销售订单打印信息区已对齐出库单样式，补充铝锭价和计价方式；未下单时显示“客户未确认下单”和保存日期，日期统一为 `YYYY-MM-DD`；明细统计改为表格内支数统计、表格下方理论预估重量统计。
+- 销售订单打印改为显式分页，预览区一页一张 A4 横向纸；系统打印版式压紧表格、保留顶部边距，每页显示 22 条明细。
+- 出库单货款明细按品类逐行显示，顺序为“品类、加工费、过磅重量、货款”；型材货款小计显示在品类明细下方，其他费用使用与货款明细相同的浅底色标题/内容样式并在费用明细下方显示其他费用小计，不再伪装成缺少加工费和重量的货款品类；货款明细和其他费用区块不显示横线，应收合计下方保留横线，应收合计字号要比明细货款更突出且大写/小写不换行。
+- 出库单打印预览与系统打印预览排版参数已统一：弹窗预览 A4 纵向纸内边距为 `8mm 8mm 6mm`，预览和实际打印共用压缩后的标题、信息区、表格、统计区、货款区、备注和页脚间距；实际打印外层内容宽度为 `194mm`，内层 `.print-delivery-note` 为 `190mm` 并居中。
+- 销售订单和出库单打印的表格右侧边框竖线在 macOS 系统打印预览/实际打印中曾被裁剪；当前出库单有效处理是在 `/Users/jnhxf/projects/r/order-manager/src/assets/index.css` 的打印规则中使用外层 `194mm`、内层出库单 `190mm` 居中，表格自身保持 `width: 100%`，单张和合并出库单共用该边界口径。
+- 出库重量必填按本次出库颜色分类动态判断，前端显示红色星号，后端同步兜底校验。
+- 新建出库单重量错误提示已改为替换输入框 placeholder，聚焦对应输入框会清空该项错误，避免错误提示撑开布局或改变输入框结构。
+- 本地开发库已因出库单字段、公共库存维度和库存流水字段变更需要删库重建；继续遵循开发期不做兼容迁移。
+- 开发期发现本地 SQLite 曾异常残留 `order_items.order_id UNIQUE`，Git 历史和当前初始化 SQL 均未包含该约束；当前处理方式是删除本地数据库重建，不做兼容迁移。
+- 商品表新增 `products.deleted_at` 用于软删除；本地开发库需要删除 SQLite 后按当前初始化 SQL 重建，不做兼容迁移。
+- 后端订单保存已强制校验经手人，并且订单明细商品信息由后端按 `product_id + customer_id` 读取有效客户商品，不再信任前端传入的商品快照。
+- 后端订单保存不再信任前端传入的加工费快照，会按 `customer_id + 订单备注 + 计价是否含税` 重新读取客户普通/特殊计价并写入订单快照。
+- 客户列表快速筛选已下沉到后端：搜索、缺手机号、缺地址和分页总数使用同一 SQL 口径；前端浏览器 fallback 也保持一致。
+- 客户和商品列表分页查询会保留上一页数据，避免翻页时查询数据短暂为空导致页码回弹到第一页。
+- 前端路由已按页面懒加载分包，`npm run build` 不再出现 Vite 大 chunk 警告。
+- 已增加 Playwright/UI 冒烟测试：新建客户、新建商品并分配客户、新建订单、创建出库单和打开出库单打印预览。
+- Playwright/UI 冒烟测试已扩为 3 条：
+  - 主流程：新建客户、新建商品并分配客户、新建订单、创建出库单并打开出库单打印预览。
+  - 商品分配：用浏览器 fallback 种子模拟批量导入商品，覆盖跨页选择、分配客户，并验证新建订单只显示当前客户商品。
+  - 打印预览：覆盖销售订单多页和出库单多页预览，验证第 2 页、末页商品和关键统计文字存在。
+- Playwright/UI 冒烟测试已扩为 5 条，新增：
+  - 订单库存批量入库：打开批量入库弹窗后本次入库保持为空；点击“填入默认入库”后按剩余数量填入，再确认后库存增加。
+  - 客户历史库存：浏览器 fallback 真实维护客户库存，覆盖补录批次、部分出库、出库单打印预览和补打出库单。
+- 浏览器 fallback 已支持客户历史库存补录、修改、部分出库、盘点、列表/详情查询和出库单查询；客户历史库存 UI 冒烟已纳入 Playwright。
+- 真实数据导入容错已补强：
+  - 商品导入支持别名表头，厚度/米重可解析常见单位后缀，例如 `1.2mm`、`2.5kg/m`，重复商品/模具编号错误会聚合提示。
+  - 客户导入支持加工费金额常见单位和币种后缀，例如 `元/吨`、`¥`、`rmb`、`cny`；行级错误覆盖默认计价非法、金额非法和重复客户名称。
+  - 订单明细导入支持英文/变体表头、字段前后空格裁剪、空备注列和缺少必填列表头提示。
+  - `src-tauri/tests/import_real_excel_samples.rs` 会运行时生成真实感 `.xlsx` 样例文件并解析，覆盖合并标题、空行、表头别名、前后空格、客户金额单位、商品厚度/米重单位、订单长度/数量单位，以及客户/商品重复数据提示。
+- 数据库安全边界已补强：
+  - 设置页显示当前数据库路径和浏览器本地记录的最近备份时间；备份成功后会更新最近备份信息。
+  - 恢复备份前自动先备份当前数据库。
+  - 删除客户、商品、订单的确认文案补充影响范围，强调历史快照、软删除或已下单限制。
+  - 后端已增加订单出库后库存锁定兜底测试：创建出库单后，订单库存入库/出库/调整和公共库存转入订单都会被拒绝。
+- 前端交互优化：
+  - 客户、商品、订单和库存搜索框统一为可清空搜索，列表查询使用防抖值，减少连续输入时的刷新抖动。
+  - 图标操作补充 hover/focus 提示；下拉清空按钮支持 hover 发现。
+  - 保存、删除、导入、分配、备份、恢复、入库、出库、转入、调整等提交按钮会显示处理中状态文案。
+  - 订单行支持键盘 Enter/空格打开详情；顶部标题会随当前路由变化。
+  - 订单与库存数量/长度改为严格整数校验，不再接受 `12abc` 这类 `parseInt` 截断输入。
+  - 出库单、批量入库等大弹窗限制为视口高度，内容区内部滚动，底部操作按钮保持可见。
+  - 客户、商品、订单列表操作栏图标提示统一向上弹出并靠右对齐，避免最后一行或单行表格时被卡片底部裁切。
+- 前端 UI 第二轮优化：
+  - 客户、商品、订单、库存列表空状态统一为带图标、说明和下一步动作的空状态。
+  - 商品空状态按“无数据/有筛选无结果”区分，支持直接新增、导入或清空筛选。
+- 新增客户历史库存：
+  - 库存页新增“客户库存”选项卡，用于补录系统使用前客户已有但未发货库存。
+  - 客户库存支持 CSV/XLSX/XLS 批量导入：一行一条库存明细，按“导入批次标识”分组；只新增、不覆盖已有批次，正式批次号仍由系统生成，整份文件在单事务中全成功或全回滚，并继续写入 `historical_import` 客户库存流水。
+  - 批量导入要求客户已存在，商品名称与模具编号必须匹配同一个已分配给该客户的商品；同批次客户、日期、价格、五类加工费和批次备注必须一致，同批次商品 + 长度 + 颜色不可重复，并按颜色分类校验对应加工费。
+  - 客户库存批量导出使用当前搜索结果，只导出正库存明细但保持批次完整；字段与导入模板一致，导出文件可再次导入。工具栏同时提供空白 CSV 模板下载，导入确认前展示汇总、错误和前 50 行预览。
+  - 新增客户历史库存弹窗使用与新建订单“订单明细”一致的商品明细表格样式；商品列下拉只显示商品名称，未选客户或客户无商品时禁用选择。
+  - 客户历史库存批次保存铝锭价、计价方式和五类加工费快照；加工费按当前明细颜色分类动态显示，前后端只要求当前批次实际出现分类对应加工费。
+  - 批次备注接入客户特殊计价关键词匹配，自动带出对应加工费并显示计价状态提示。
+  - 客户历史库存出库支持逐行自定义出库数量，按实际出库行要求填写对应品类重量，并生成可打印出库单；出库弹窗要求填写经手人，错误提示显示在输入框 placeholder 内以避免布局跳动。
+  - 客户历史库存出库弹窗支持键盘回车流转：经手人到重量区，重量区逐项跳转，最后进入出库明细数量；出库明细数量列先向下跳到底，再跳备注列，最后进入出库单备注。
+  - 客户历史库存出库单打印信息区显示“批次”并直接展示批次号；计价方案显示出库时生效的默认价或特殊关键词价。
+  - 客户历史库存同一批次支持多次部分出库并保留全部出库单 ID；客户库存页新增独立出库单区域，单张出库单和合并出库单都在这里统一预览/补打。
+  - 客户历史库存合并出库支持同客户多价格快照批次一起选择，提交时按价格快照拆成多个客户库存出库单，再生成打印用合并单；分组按批次集中填写，空值默认取批次备注第一个逗号之后、第二个逗号之前的内容，仍为空则必填。
+  - 查看客户历史库存弹窗会打开前重新读取批次详情；批次查看弹窗只保留批次信息和商品明细，不再显示出库单列表。
+  - 已出库批次查看模式下，商品明细操作列只显示可执行动作：剩余数量大于 0 才显示盘点入口；无剩余数量不显示禁用图标。盘点只调整剩余库存并记录客户库存流水，不修改已生成出库单。
+  - 客户库存页签新增客户库存流水卡片，展示时间、批次/出库单、客户、商品、模具编号、规格、类型、变动、变动后和备注。
+  - 后端客户历史库存批次查询共用字段映射 helper，避免列表查询和单批次查询结构漂移。
+- 弹窗样式统一：
+  - 基础弹窗统一增加阴影，标题区和底部操作区固定不参与内容滚动。
+  - `p-0` 大弹窗标题区上边距统一为 `py-4`；各弹窗大小和内容保持原有业务设置。
+  - 订单和客户筛选无结果时支持一键清空筛选；完全无数据时给出新增入口。
+  - 库存订单视图新增“全部 / 待入库 / 有库存 / 已出库 / 超入库”状态筛选，并在订单卡片上显示待入库数量。
+  - 客户、商品、库存概览视觉语言统一：客户页作为基准；商品页改为左侧指标卡 + 快速筛选；库存页保留顶部概览但使用同款指标卡。
+  - 列表页加载和错误状态抽成统一组件；错误状态带重试入口，减少不同页面的布局跳动。
+  - 订单页左侧快速筛选补充数量，与客户、商品的概览筛选信息密度保持一致。
+- 前端交互第三轮优化：
+  - 新建/编辑订单提交失败时，会标记必填项并自动滚动聚焦到第一个错误字段，包含客户、经手人、铝锭价、明细商品、长度、颜色和数量。
+  - 库存入库、出库、盘点、订单批量入库、公共库存转入和出库单创建成功后，会显示居中的结果反馈，明确操作对象、项目数和数量。
+- 前端交互第四轮优化：
+  - 新建出库单重量输入支持回车顺序跳转；提交校验失败会自动定位第一个错误字段，自动聚焦不会清掉错误提示。
+  - 新建出库单和批量入库弹窗内容区补充左右缓冲，避免输入框聚焦状态被滚动容器裁切。
+  - 批量入库弹窗把“剩余数量”改为“库存状态”，把“入库数量”改为“本次入库”，并用状态徽标提示建议入库、已入齐和超入库。
+  - 订单批量入库弹窗的“本次入库”输入支持回车逐行跳转，最后一行跳到备注输入，避免误触发表单提交。
+  - 订单批量入库弹窗打开时“本次入库”保持为空，避免图片识别入库前误带默认数量；“填入默认入库”按钮会按剩余待入库数量填入未入齐行，已入齐或超入库行保持空；“清空”按钮在全部为空时禁用。
+  - 订单保存成功回订单列表；订单下单成功进入库存页的订单库存视图。
+- UI 细节验收结果：
+  - 390px 小窗口下客户弹窗和新建出库单弹窗底部按钮保持可见。
+  - 新建出库单和批量入库大表弹窗的 `form` 与内容区已补 `min-w-0`，避免内部宽表格把底部按钮横向撑出视口。
+  - 商品最后一行操作 tooltip 未被表格容器裁切；长客户名、长地址、长备注不会造成页面级横向撑破。
+  - 销售订单多页打印预览识别到多张纸页，页与页有明确分隔。
+  - 库存页大数据量下左侧订单卡片、选中态、右侧明细和动作按钮仍可定位。
+- 设置页交互优化：
+  - 恢复备份确认弹窗和恢复成功弹窗限制在视口宽度内；长数据库路径在弹窗内自动换行，避免横向撑出弹窗。
+  - 设置页新增“应用版本”区域，读取 Tauri 运行版本和 Vite 注入的构建时间，方便核对当前运行的是不是本次 release 包。
+- 桌面端验收自动化：
+  - 新增 `pnpm run desktop:acceptance -- prepare`，生成本轮桌面 App 验收用客户/商品/订单明细 CSV、`manifest.json` 和 `runbook.md`，并在操作前自动备份当前真实 SQLite 数据库。
+  - 新增 `pnpm run desktop:acceptance -- verify --manifest <path>`，在桌面操作完成后直接查询 SQLite，复核客户导入、商品导入、商品分配、下单、入库、出库、出库单重量、库存清零、库存流水、手动备份文件和恢复前安全备份。
+- 真实用户试用准备：
+  - 新增 `docs/trial-kit/`，只包含样例 CSV，不包含真实业务数据：客户导入、商品导入和订单明细导入。
+  - 新增 `docs/trial-user-guide.md`，用极短流程说明客户导入、商品导入、分配客户、下单、入库、出库和备份。
+- 主布局品牌区优化：
+  - 左上角品牌从通用 `Order Manager / 本地订单工作台` 改为 `ALU Order PRO` 字标；保留前置图标，但使用更贴合铝材订单管理的型材/库存感图标和项目主色系。
+- 代码清理：
+  - 前端重复的日期格式化、金额格式化/解析、错误信息提取和文件名解析已抽到 `src/lib/datetime.ts`、`src/lib/money.ts`、`src/lib/errors.ts`、`src/lib/file-path.ts`。
+  - 客户、商品、订单、库存、设置页和订单/出库单打印组件已改用公共工具函数，保持业务行为不变。
+  - 加工费五类分类和快照处理已抽到前端 `src/lib/processing-fees.ts` 和后端 `src-tauri/src/processing_fees.rs`，减少断桥/喷涂/坯料/氧化/电泳字段散落。
+  - 客户页加工费字段、默认表单值、金额/手机号校验、默认计价解析、导出字段、编辑回填和金额 payload 构造已抽到 `src/features/customers/lib/customer-form-utils.ts`。
+  - 订单表单页默认值、草稿快照、客户加工费解析、订单保存 payload 构造、明细导入预览校验、明细统计和表单状态已抽到 `src/features/orders/lib/order-form-utils.ts`。
+  - 库存页订单库存分组统计、筛选、操作结果提示、出库重量校验、批量入库图片识别匹配和库存规格格式化已抽到 `src/features/inventory/lib/inventory-utils.ts`。
+  - 库存页订单出库/批量入库弹窗的纯状态逻辑已抽到 `src/features/inventory/lib/inventory-dialog-state.ts`，包含默认表单值、行数据构造、数量汇总、重量字段派生、批量入库填充/清空和提交项校验；`tests/node/test-inventory-utils.mjs` 已补对应回归测试。
+  - 库存页客户历史库存页签的批次表、加工费摘要和客户库存流水展示已抽到 `src/features/inventory/components/customer-inventory-view.tsx`；页面继续负责查询、弹窗和提交状态，展示组件只接收数据和回调。
+  - 客户历史库存批次的出库单 ID 去重 helper 已抽到 `src/features/inventory/lib/inventory-utils.ts`，并在 `tests/node/test-inventory-utils.mjs` 覆盖单张/多张补打入口共用的去重顺序。
+  - 浏览器 fallback 订单库存新增 `order-manager:fallback-order-inventory-stocks` 本地状态；没有显式库存状态时保留旧的“当前库存等于下单数量”预览口径，有显式状态时可模拟“待入库 -> 批量入库 -> 当前库存增加”，已出库订单在 fallback 中也显示当前库存 0，便于 Playwright 覆盖库存真实流程。
+  - 日期工具 `src/lib/datetime.ts` 新增表单日期、紧凑日期和备份文件时间戳格式化方法，订单 API、订单表单和设置备份已复用。
+  - 客户、商品和订单列表导出 CSV 的默认文件名日期已改用 `formatDateInputValue(new Date())`，避免 `toISOString().slice(0, 10)` 在本地时区边界出现日期偏差。
+  - 最近清理只删除了确认无引用的前端加工费空对象 helper `emptyProcessingFeesX100` 及其专用类型；没有改变加工费分类、快照或页面行为。
+  - `tests/node/test-processing-fees.mjs` 已补充前端颜色分类回归用例，覆盖“双面”、外内组合、颜色冲突检测和类别支数统计顺序。
+  - `.gitignore` 已忽略 Playwright 产物 `playwright-report` 和 `test-results`，避免 UI 测试失败输出污染工作树。
+
+## 设计偏好
+
+- 用户偏好实用、清爽、克制的业务系统风格。
+- 左侧品牌区应体现“铝材订单管理系统”：保留图标识别点，避免通用购物袋语义；`ALU Order PRO` 使用项目现有主色、前景色和弱化文字色。
+- 字段少的列表页适合“左侧概览卡片 + 右侧表格”。
+- 已采用该风格的页面：客户、商品、订单、库存。
+- 设置页和订单编辑页不强行套双栏。
+- 表格数字倾向右对齐，文本按场景左对齐或居中。
+- 不喜欢无意义横向滚动和过大的最小窗口。
+
+## 协作与排障偏好
+
+- 用户对“改了但没有效果”的情况非常敏感；遇到 UI、滚动、高度、遮挡、显示不全等问题时，应先逐层确认真实生效的 DOM/组件结构、滚动容器和高度来源，再修改样式。
+- UI 修复后需要明确说明改了哪个文件、哪一块代码、预期界面会出现什么变化；如果用户反馈没有变化，应回到代码路径和实际渲染结构排查，不要继续猜测 class。
+- 对弹窗内多个卡片或嵌套滚动区域，要优先判断哪个容器负责整体高度、哪个容器负责内部滚动，避免只调整行高、padding 或无效父级。
+- 排查订单/出库单打印表格边框时，用户当前关注的是表格右侧边框竖线；当前出库单有效方案是系统打印外层 `194mm`、内层 `.print-delivery-note` `190mm` 居中。后续清理 CSS 时不要把出库单重新推满到可打印宽度；如果用户反馈仍有问题，应先确认 PDF/系统打印预览里的实际表格宽度、右边界坐标和是否被裁剪，再修改代码。
+- 清理代码时要区分“业务必要新增”和“过渡残留”；只删除能确认无用的状态、helper、返回值、按钮分支或查询，避免把大 diff 简单说成已经清干净。
+- 用户希望反馈直接、具体、少绕弯；理解错时要直接承认并重新收敛问题。
+- 后续提交信息使用中文，保持简短明确。
+
+## 验证命令
+
+```bash
+cd /Users/jnhxf/projects/r/order-manager
+pnpm run check
+pnpm run check:rust
+pnpm run check:all
+pnpm run check:full
+git diff --check
+```
+
+```bash
+cd /Users/jnhxf/projects/r/order-manager/src-tauri
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+```
+
+- `pnpm run check` 会依次运行严格 TypeScript 检查、公共工具规则测试、前端颜色分类测试、CSV 导出文件测试、库存工具规则测试、库存 API fallback 测试、订单表单工具规则测试、客户表单工具规则测试、客户/商品/订单/设置 API 测试和生产构建。
+- `pnpm run check:rust` 会进入 `src-tauri` 运行 Rust 格式检查、Clippy 和 Rust 单测。
+- `pnpm run check:all` 会依次运行前端 `check` 和 Rust `check:rust`，适合提交前常规全量验证。
+- `pnpm run check:full` 会在 `check` 之后追加 Playwright UI 冒烟测试。
+
+## 最近验收记录
+
+- 桌面 App 端到端试用走查已完成，使用调试包 `/Users/jnhxf/projects/r/order-manager/src-tauri/target/debug/bundle/macos/铝材订单管理系统.app`，完整走通客户导入、商品导入、分配客户、下单、订单入库、出库、出库单打印预览、备份和恢复备份。
+- 桌面走查订单 `ALU20260623001` 恢复后仍显示 `已出库`；DB 核对出库单存在、粉末重量 `45.00 kg`、订单库存合计 `0`、流水包含 `produce +3` 和 `ship -3`。
+- 订单库存批量入库当前口径：打开批量入库弹窗时本次入库保持为空，需要点击“填入默认入库”才按剩余数量填入；清空按钮在全部为空时禁用，避免图片识别入库前误带默认数量。Playwright smoke 已覆盖该流程。
+- Release App 试用走查使用 `/Users/jnhxf/projects/r/order-manager/src-tauri/target/release/bundle/macos/铝材订单管理系统.app`，完整走通客户导入、商品导入、分配客户、新建订单、订单入库、出库单预览、备份、恢复备份和恢复后继续保存订单。
+- Release 走查订单 `ALU20260623002` 出库后 DB 核对出库单存在、粉末重量 `45.00 kg`、订单库存合计 `0`、流水包含 `produce +3` 和 `ship -3`；恢复备份前自动生成安全备份 `order-manager-before-restore-1782198055.sqlite`。
+- Release 走查恢复备份后通过桌面 App 保存新订单 `ALU20260623003`，状态为 `saved`，明细为 `发布验收商品-142659 / 6000mm / 灰色 / 1 支`，证明恢复后数据库仍可继续写入。
+- Release 走查发现并修复单行订单入库体验问题：逐行点击“入库”时数量原为空，现按 `requiredQuantity - currentQuantity` 自动建议剩余待入库；逐行“出库”默认建议当前库存，“盘点”保持空值。
+- 删除影响提示已核对：客户、商品删除弹窗文案说明影响范围和历史凭据保留；订单列表中已下单订单只显示查看入口，未下单订单才有删除入口，删除订单确认文案说明仅可删除编辑/已保存未下单订单且已下单订单会作为库存和出库凭据保留。
+- 客户历史库存 Playwright 验收已补充并跑通：seed 客户/已分配商品后，UI 录入客户库存批次 `KH-20260620001`，部分出库 2 支并打开出库单打印预览，返回客户库存后显示剩余 3 支，并可通过“补打出库单”再次打开预览。
+- 真实 Excel 样例导入验收已补强并跑通：客户样例覆盖合并标题、空行、别名表头、金额单位和重复客户名称提示；商品样例覆盖厚度/米重混乱单位和商品名称/模具编号重复提示；订单明细样例覆盖合并标题、空行、长度/数量单位、前后空格和空备注列。验证命令为 `cargo test --manifest-path src-tauri/Cargo.toml --test import_real_excel_samples`。
+- 试用前数据安全收口已补强后端兜底：恢复备份前的安全备份文件名若同秒重复会自动加 `-2` 等后缀；恢复替换主库时先暂存当前主库，再清理 WAL/SHM，成功落位后才删除暂存旧库；恢复源备份文件不会被消耗。
+- 试用前删除安全边界已补单测：客户删除会拦截编辑/已保存未下单订单引用，已下单订单只解除 `customer_id` 并保留客户快照；商品删除会拦截编辑/已保存未下单订单引用，允许时只软删除并清理客户分配；订单删除会拦截已下单订单，未下单保存单删除会级联清理明细。
+- 出库后锁定后端兜底已补专名测试：已有出库单的订单会被识别为已出库并阻止再次出库/库存调整；单行入库、公共转订单和批量入库锁定测试继续覆盖。
+- 本轮安全收口验证命令：`cargo test --manifest-path src-tauri/Cargo.toml commands::files`、`cargo test --manifest-path src-tauri/Cargo.toml delete_customer`、`cargo test --manifest-path src-tauri/Cargo.toml delete_product`、`cargo test --manifest-path src-tauri/Cargo.toml delete_order`、`cargo test --manifest-path src-tauri/Cargo.toml detects_existing_delivery_note_before_second_delivery`、`cargo test --manifest-path src-tauri/Cargo.toml locks_order_inventory_after_delivery_note_is_created`、`cargo test --manifest-path src-tauri/Cargo.toml locks_batch_order_inventory_after_delivery_note_is_created`、`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`git diff --check`。
+- 打包试用版前桌面端端到端走查已完成，目标 App 为 `/Users/jnhxf/projects/r/order-manager/src-tauri/target/release/bundle/macos/铝材订单管理系统.app`，完整走通客户导入、商品导入、分配客户、下单、批量入库、出库、出库单打印预览、备份和恢复备份。
+- 本次 release 走查使用样例客户 `端到端客户-20260623164527`、商品 `端到端商品-20260623164527`、订单 `ALU20260623004`；出库单预览核对到客户、订单编号、商品、模具 `E2E-164527`、出库数量 `3`、喷涂重量 `45.00 kg`、货款 `¥949.50` 和备注均存在，未触发实际打印。
+- 本次 release 走查恢复链路已通过：手动备份保存到 `/private/tmp/order-manager-e2e/order-manager-backup-20260623164527.sqlite`，恢复前自动生成安全备份 `/Users/jnhxf/Library/Application Support/com.jnhxf.order-manager/order-manager-before-restore-1782205644.sqlite`；恢复后订单列表可刷新，`ALU20260623004` 仍为 `已出库`。
+- 本次 release 走查 DB 复核：订单 `ALU20260623004` 状态 `ordered`，经手人 `端到端验收`，铝锭价快照 `2000000`；出库单喷涂重量 `4500`，订单库存数量 `0`，库存流水包含 `produce +3`（端到端批量入库）和 `ship -3`（出库单 ALU20260623004）。
+- 本次桌面走查注意点：最初用系统 `open` 命中旧的 `/Applications/铝材订单管理系统.app`，该旧包对商品导入样例中的 `1.20mm`、`2.500kg/m` 解析失败；已杀掉旧进程并只操作目标 release App。后续桌面验收要优先确认进程路径，避免误用旧安装包。
+- 发布口径已固化到 `docs/release-checklist.md`：试用版默认只运行当前仓库 release bundle；若交给用户从 `/Applications/铝材订单管理系统.app` 启动，必须先覆盖旧 App，并在设置页核对应用版本、构建时间、数据库路径和最近备份信息。
+- 桌面验收脚本入口已验证：`pnpm run desktop:acceptance -- --help` 可正常输出帮助；`pnpm run desktop:acceptance -- prepare --run-id 20260623182000` 已生成验收样例文件和真实库预备份到 `/private/tmp/order-manager-desktop-acceptance/20260623182000/`，其中预备份文件为 `real-db-before-desktop-acceptance-20260623182000.sqlite`。
+- 桌面验收脚本 verify 闭环已用 release App 跑通：本轮 run id `20260623173643`，目标 App 为 `/Users/jnhxf/projects/r/order-manager/src-tauri/target/release/bundle/macos/铝材订单管理系统.app`，真实桌面操作走通客户导入、商品导入、商品分配、下单、批量入库、出库并打开出库单预览、手动备份和恢复备份；复核命令 `pnpm run desktop:acceptance -- verify --manifest /private/tmp/order-manager-desktop-acceptance/20260623173643/manifest.json` 全部 PASS。
+- 本次桌面 verify 复核到手动备份文件 `/private/tmp/order-manager-desktop-acceptance/20260623173643/manual-backup-from-app-20260623173643.sqlite`，恢复前安全备份 `/Users/jnhxf/Library/Application Support/com.jnhxf.order-manager/order-manager-before-restore-1782209261.sqlite`，订单 `ALU20260623005` 状态 `ordered`，出库后订单库存 `0`，出库单喷涂重量 `4500`，库存流水包含 `produce +3` 和 `ship -3`。
+- 桌面验收脚本扩展客户库存场景后已用 release App 跑通：本轮 run id `20260705230423`，真实桌面操作走通客户/商品导入、商品分配、订单下单、批量入库、订单出库、客户库存单批次出库、客户库存多价格批次合并出库、手动备份和恢复备份；复核命令 `CI=true pnpm run desktop:acceptance -- verify --manifest /private/tmp/order-manager-desktop-acceptance/20260705230423/manifest.json` 全部 PASS。
+- 本次桌面 verify 复核到手动备份文件 `/private/tmp/order-manager-desktop-acceptance/20260705230423/manual-backup-from-app-20260705230423.sqlite`，恢复前安全备份 `/Users/jnhxf/Library/Application Support/com.jnhxf.order-manager/order-manager-before-restore-1783267571.sqlite`，订单 `ALU20260705001` 状态 `ordered`，出库后订单库存 `0`，客户库存单批次剩余 `4`，合并批次 A/B 剩余均为 `3`，客户库存合并出库单号 `ZMYSKH-CK20260706-01`。
+- 第二轮 release 桌面验收已闭环：run id `20260714000840`，目标 App 为 `/Users/jnhxf/projects/r/order-manager/src-tauri/target/release/bundle/macos/铝材订单管理系统.app`；订单 `ALU20260714001` 完成入库、出库和预览，客户库存单批次出库单号 `ZMYSKH-20260620003-01`，合并出库单号 `ZMYSKH-CK20260714-01`。单批次剩余 `4`，合并批次 A/B 剩余均为 `3`；合并出库按 B=`3` 支/`12 kg`/`第二车`、A=`2` 支/`11 kg`/`第一车` 绑定，两个计价方案分别为 `¥1.40` 与 `¥1.30`。
+- 本轮手动备份保存到 `/private/tmp/order-manager-desktop-acceptance/20260714000840/manual-backup-from-app-20260714000840.sqlite`；恢复后自动生成安全备份 `/Users/jnhxf/Library/Application Support/com.jnhxf.order-manager/order-manager-before-restore-1783960464.sqlite`。复核命令 `pnpm run desktop:acceptance -- verify --manifest /private/tmp/order-manager-desktop-acceptance/20260714000840/manifest.json` 全部 PASS。
+- 验收数据回收已完成：退出 release App 后使用 `/private/tmp/order-manager-desktop-acceptance/20260714000840/real-db-before-desktop-acceptance-20260714000840.sqlite` 恢复真实库，CLI 覆盖前安全备份为 `/Users/jnhxf/Library/Application Support/com.jnhxf.order-manager/order-manager-before-cli-restore-20260714004100.sqlite`；恢复后 `PRAGMA quick_check` 为 `ok`，客户 `6`、有效商品 `73`、订单 `4`，本轮客户/订单验收数据已移除。最终 release App 构建时间为 `2026/07/14 00:43`，版本 `1.0.0`。
+- 真实库命令行兜底脚本已补充：`pnpm run backup:real-db` 默认备份当前桌面 App 数据库到 `/private/tmp/order-manager-real-db-backups/`，`pnpm run restore:real-db -- --backup <path> --yes` 默认恢复当前桌面 App 数据库；恢复前会校验备份库、生成 `order-manager-before-cli-restore-<timestamp>.sqlite` 安全备份，并在检测到 App 进程运行时拒绝恢复。
+- 本次命令行兜底验证：`node --check scripts/backup-real-db.mjs`、`node --check scripts/restore-real-db.mjs`、`pnpm run backup:real-db -- --output /private/tmp/order-manager-cli-backup-test.sqlite --overwrite`、`pnpm run restore:real-db -- --backup /private/tmp/order-manager-cli-backup-test.sqlite --dry-run`、`pnpm run restore:real-db -- --backup /private/tmp/order-manager-cli-backup-test.sqlite --db /private/tmp/order-manager-cli-restore-target.sqlite --yes` 和 `git diff --check` 均通过；实际恢复只覆盖 `/private/tmp/order-manager-cli-restore-target.sqlite` 临时库，真实库计数保持客户 `9`、有效商品 `65`、订单 `6`。
+- 本次工程化收口：新增 `tests/node/test-operational-scripts.mjs`，检查真实库备份、真实库恢复和桌面验收脚本的 Node 语法与 `--help` 入口，并接入 `pnpm run check`，避免试用交付脚本改坏后遗漏。
+- 本次功能提交：出库单新增额外收费名称/金额，数据库字段为 `extra_charge_name`、`extra_charge_amount_x100`；创建订单出库单和客户历史库存出库单时保存快照，打印货款明细末尾显示并计入总货款。
+- 本次代码清理：前端出库单额外收费解析和校验抽到 `parseDeliveryExtraCharge`，订单出库和客户历史库存出库共用；`tests/node/test-inventory-utils.mjs` 已补收费名称/金额 helper 用例，功能行为不变。
+- 本次订单导入体验修复：新建/编辑订单的“导入订单明细”弹窗外层改为标题/内容/底部按钮三行布局，内容区内部滚动；导入错误提示或预览表格变高时不会再把“取消 / 导入到订单”按钮撑出弹窗。
+- 本次订单明细 CSV 口径统一：下载模板和“导出明细”共用 `商品名称、长度(mm)、颜色、数量、备注` 五列可再导入格式；导出明细不再包含订单编号、客户、模具编号、厚度、米重、理论重量和合计行，避免用户拿导出文件再导入时失败。
+- 本次代码清理：订单明细 CSV 表头和模板/导出行生成收敛到 `order-form-utils.ts`，`tests/node/test-order-form-utils.mjs` 已补模板与导出同口径回归；后端出库单额外收费名称/金额校验抽到 `normalize_delivery_extra_charge`，订单出库和客户历史库存出库共用。
+- 本轮验证命令：`pnpm run test:order-form-utils`、`pnpm run typecheck`、`pnpm run build`、`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo test --manifest-path src-tauri/Cargo.toml normalize_delivery_extra_charge`、`git diff --check` 均通过。
+- 本次商品导入导出收口：商品批量导入支持识别导出 CSV 中的可选 `归属客户` 列，按客户名称精确匹配并写入 `customer_products`；多个客户支持 `、`、`,`、`，`、`;`、`；` 分隔，`未分配客户/未分配/无/-` 按空归属处理。导入预览新增归属客户列，浏览器 fallback 同步支持归属客户导入和未知客户报错。
+- 本次商品导入错误提示优化：导入文件内部重复会提示 `第 X 行：商品名称/模具编号“...”在导入文件中重复`；与系统已有商品重复会提示 `第 X 行：商品名称/模具编号“...”已存在于系统商品资料中`；底层 SQLite 唯一约束错误仍映射为 `商品名称已存在/模具编号已存在` 兜底。
+- 本轮商品导入验证命令：`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo test --manifest-path src-tauri/Cargo.toml product_import`、`cargo test --manifest-path src-tauri/Cargo.toml maps_product_unique_constraint_errors_to_business_messages`、`pnpm run test:product-api-fallback`、`pnpm run typecheck`、`pnpm run build`、`git diff --check` 均通过。
+- 本次功能提交：新增合并出库单打印预览，支持同客户多张已出库订单前端合并打印；按价格快照分计价方案，同价多单要求填写分组说明并在明细中按组显示，单价格组合并单下方统计与单张出库单一致，多价格组显示每组货款明细和小计，最后显示合并总计。
+- 本次出库单打印修复：合并出库单打印按钮恢复可用；出库单头部计价方案去掉末尾“价”，合并出库单保留铝锭价和计价方式；单张/合并出库单系统打印使用外层 `194mm`、内层 `190mm` 居中，避免右侧竖线被裁。
+- 本次备注携带：订单明细备注会带入出库单明细，Rust 后端和浏览器 fallback 同步；相关库存 API fallback 和库存工具测试已补充。
+- 本轮合并出库单验证命令：`pnpm run test:inventory-utils`、`pnpm run test:inventory-api-fallback`、`pnpm run typecheck`、`pnpm run build`、`cargo fmt --manifest-path src-tauri/Cargo.toml --check`、`cargo test --manifest-path src-tauri/Cargo.toml commands::inventory`、`git diff --check` 均通过。
+- 本次合并出库单版式收口：多价格组合并单顶部只保留一次抬头信息，顶部不再显示铝锭价/计价方式/计价方案；每组铝锭价显示在该组统计块左侧，货款明细标题统一，组内“小计”金额按货款明细字号显示；最终合并货款大写/小写不换行，合并总数量/总重量与合并货款之间保留 `6mm` 间距。
+- 本轮合并出库单版式验证命令：`pnpm run typecheck`、`pnpm run build`、`git diff --check` 均通过。
+- 本次功能提交：客户库存出库单明细新增分组字段和打印分组列；客户库存合并出库支持同客户多价格快照批次一起选择，按价格快照拆单并生成打印用合并单，每个计价方案独立录入重量和额外收费；分组可手填，未填时默认取批次备注第一个逗号之后、第二个逗号之前的内容，仍为空则必填。
+- 本轮客户库存合并出库验证命令：`pnpm run typecheck`、`pnpm run build`、`git diff --check` 均通过。
+- 本次交互优化：库存页顶部全局动作只保留刷新；订单库存页签内显示合并出库单，客户库存页签内显示新增客户库存。订单库存批量入库弹窗打开时本次入库保持为空，避免图片识别前误带默认数量；点击“填入默认入库”后按剩余数量填入，“清空”在全部为空时禁用并与前置按钮样式统一。
+- 本轮库存交互验证命令：`git diff --check`、`CI=true pnpm run test:inventory-utils`、`CI=true pnpm run typecheck`、`CI=true pnpm run build`、`CI=true pnpm exec playwright test tests/ui/smoke.spec.ts -g "can confirm batch inbound after filling default quantities"` 均通过。
+- 本次回归修复：浏览器 fallback 创建客户库存出库单时兼容未传 `groupLabel` 的旧/简化 payload，继续按批次备注裁剪默认分组；`tests/node/test-inventory-api-fallback.mjs` 已补断言覆盖该行为。
+- 本轮验证命令：`CI=true pnpm run test:inventory-api-fallback`、`CI=true pnpm run check` 均通过。
+- 本次商品管理优化：新增商品弹窗补充“归属客户”复选列表，与编辑商品弹窗保持一致；新增时如勾选客户，会用新商品 ID 调用 `setProductCustomers` 写入客户归属，因此新增后商品列表可直接显示所选归属客户。
+- 本轮商品管理验证命令：`CI=true pnpm run build`、`git diff --check` 均通过。
+
+## 最近提交
+
+- 本轮完整 release 桌面验收已闭环：run id `20260716205914`，客户/商品 CSV 导入、商品分配、订单 `ALU20260716001` 下单、批量入库 `3` 支、订单出库 `3` 支/喷涂重量 `45 kg`、客户库存单批次部分出库以及 A/B 两批次多价格合并出库全部走通；合并出库单号 `ZMYSKH-CK20260716-01`，B=`3` 支/`12 kg`/`第二车`/喷涂费 `1.40`，A=`2` 支/`11 kg`/`第一车`/喷涂费 `1.30`。复核命令 `pnpm run desktop:acceptance -- verify --manifest /private/tmp/order-manager-desktop-acceptance/20260716205914/manifest.json` 全部 PASS。
+- 本轮应用内手动备份为 `/private/tmp/order-manager-desktop-acceptance/20260716205914/manual-backup-from-app-20260716205914.sqlite`，应用内恢复前安全备份为 `/Users/jnhxf/Library/Application Support/com.jnhxf.order-manager/order-manager-before-restore-1784210042.sqlite`。退出 App 后使用验收前备份恢复真实库，CLI 覆盖前安全备份为 `/Users/jnhxf/Library/Application Support/com.jnhxf.order-manager/order-manager-before-cli-restore-20260716215525.sqlite`；恢复后 `PRAGMA quick_check` 为 `ok`，客户 `4`、有效商品 `72`、订单 `3`，run id 对应客户、商品、订单、客户库存批次和客户库存出库单均已移除。
+- 本轮最终 release App 构建时间为 `2026/07/16 21:47`；真实订单 `ALU20260701001` 打印预览已确认明细备注列中的“虎标膜 / 收缩膜”水平居中。签名检查仍显示 `adhoc/linker-signed`、无 Team ID，`security find-identity -v -p codesigning` 为 `0 valid identities found`，`codesign --verify --deep --strict` 和 `spctl` 无法通过；交付其他 Mac 前仍需人工决定 Apple Developer 签名、entitlements 和 notarization 方案。
+- 本次订单打印样式修复：销售订单明细表最右侧“备注”列的明细文字（例如“虎标膜”）统一水平居中，表格下方整单备注保持原有对齐；Playwright 多页销售订单打印用例补充明细备注单元格计算样式断言。配套验证：`pnpm run typecheck`、`CI=true pnpm run build`、`CI=true pnpm exec playwright test tests/ui/smoke.spec.ts -g "can open multi-page sales order and delivery note print previews"`、`git diff --check`。
+- 本次客户库存导出再导入 release 专项验收已闭环：目标 App 为 `/Users/jnhxf/projects/r/order-manager/src-tauri/target/release/bundle/macos/铝材订单管理系统.app`，设置页构建时间为 `2026/07/16 20:48`。真实库批次 `YZHZ-20250318001` 筛选导出 4 条、44 支到 `/private/tmp/order-manager-export-reimport-20260716204856/customer-inventory-reimport-20260716204856.csv`，同库导入后生成新批次 `YZHZ-20250318004`，原批次保留，新批次包含 4 条库存和 4 条补录流水。专项验收前真实库备份为 `/private/tmp/order-manager-real-db-backups/export-reimport-before-20260716204856.sqlite`；退出 App 后已恢复该备份，覆盖前安全备份为 `/Users/jnhxf/Library/Application Support/com.jnhxf.order-manager/order-manager-before-cli-restore-20260716205421.sqlite`。恢复后 `PRAGMA quick_check` 为 `ok`，客户库存批次恢复为 19 个，验收批次已移除，原批次仍有 4 条正库存。
+- 本次客户库存导出再导入口径修复：批量导入的“导入批次标识”只用于文件内分组，不再与系统现有正式批次号做冲突拦截；因此从当前系统导出的 CSV 可以再次导入，并由系统生成新的正式批次号，不覆盖原批次。Rust 与浏览器 fallback 均补充已有批次号作为导入分组标识的回归测试。配套验证：`pnpm run check:all`、`git diff --check`。
+- 本次库存 fallback 等价清理：`src/features/inventory/api/inventory-api.ts` 抽取加工费类别标签、客户库存批次明细规范化、库存快照生成、历史补录流水生成、价格快照比较和客户库存出库暂存扣减 helper；新增/更新批次与客户库存出库主流程只保留校验、组装和持久化编排，原有校验顺序、错误文案、流水顺序与存储行为不变。配套验证：`pnpm run check:all`、`git diff --check`。
+- 本次客户库存出库浏览器 fallback 事务语义补齐：`src/features/inventory/api/inventory-api.ts` 改为先完整解析所有计价组，再按 payload 顺序暂存每个库存 ID 的剩余数量；同一库存跨计价组重复出现时会累计校验、合法场景逐条生成出库明细和流水、最终每个库存只落盘一次，累计超库存时不写出库单/库存/流水。同步补齐必需类别加工费复验、空库存 ID、计价组批次 ID 去空/去重、零数量计价组跳过价格校验、批次存在性错误优先级、明细/出库单备注裁剪和 Rust 格式流水备注；`tests/node/test-inventory-api-fallback.mjs` 覆盖损坏价格快照、重复库存累计超限回滚、合法重复扣减与两条连续流水等场景。配套验证：`pnpm run check:all`、`git diff --check`。
+- 本次客户库存批次与盘点浏览器 fallback 数据一致性补齐：新增/更新批次会裁剪历史日期、历史单号、批次备注和明细备注，空历史日期按 `null` 保存并拦截非 `YYYY-MM-DD` 格式；更新未出库批次时会删除旧 `historical_import` 流水并按最新明细重建，流水数量和备注不再停留在更新前；客户库存盘点备注会裁剪，空备注按 Rust 口径保存“客户库存盘点”。`tests/node/test-inventory-api-fallback.mjs` 补充日期、文本快照、补录流水替换和盘点默认备注断言。配套验证：`pnpm run check:all`、`git diff --check`。
+- 本次公共库存调整浏览器 fallback 返回对象隔离补齐：`src/features/inventory/api/inventory-api.ts` 在 `adjustInventory` fallback 找到公共库存行后返回克隆对象，避免调用方修改调整返回值污染 `browserFallbackInventory.items` 内存缓存；`tests/node/test-inventory-api-fallback.mjs` 补充修改调整返回对象后列表库存数量仍保持原值的断言，并顺带覆盖带空格商品 ID/调整类型的公共库存调整路径。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 本次客户库存出库浏览器 fallback 明细参数口径对齐：`src/features/inventory/api/inventory-api.ts` 在创建客户库存出库单 fallback 中先裁剪各计价组 `batchIds` 和出库明细 `stockId`，后续批次选择、库存明细匹配、扣减和流水写入都使用裁剪值，对齐 Rust 客户库存出库按 `stock_id.trim()` 查询库存的口径；`tests/node/test-inventory-api-fallback.mjs` 补充带空格 stockId 仍可创建客户库存出库单并保留正确批次/商品快照的断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 本次客户库存批次浏览器 fallback 明细参数口径对齐：`src/features/inventory/api/inventory-api.ts` 在新增和更新客户库存批次 fallback 中先裁剪每行 `productId` 和 `color`，后续归属校验、加工费分类和批次明细快照都使用裁剪值，对齐 Rust 客户库存批次写入时对明细参数的归一化口径；`tests/node/test-inventory-api-fallback.mjs` 补充带空格商品 ID/颜色新增和更新批次后保存为裁剪后商品快照的断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 本次订单出库单浏览器 fallback 明细参数口径对齐：`src/features/inventory/api/inventory-api.ts` 在 fallback 创建订单出库单时先裁剪每行 `productId` 和 `color`，后续出库数量汇总、重量分类、明细校验、订单库存匹配和出库单明细快照都使用裁剪值，对齐 Rust `create_delivery_note` 对出库明细参数的归一化口径；`tests/node/test-inventory-api-fallback.mjs` 补充带空格商品 ID/颜色仍可匹配订单库存并生成裁剪后出库明细的断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 本次订单批量入库浏览器 fallback 参数口径对齐：`src/features/inventory/api/inventory-api.ts` 在 fallback 批量入库中先裁剪每行 `productId` 和 `color`，后续库存 key、当前库存查找和保存都使用裁剪值，对齐 Rust `apply_order_inventory_batch_adjustment` 的明细参数归一化口径；`tests/node/test-inventory-api-fallback.mjs` 补充带空格商品 ID/颜色的批量入库会累加入同一订单库存行的断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 本次库存调整浏览器 fallback 参数口径对齐：`src/features/inventory/api/inventory-api.ts` 在公共库存和订单库存单行调整 fallback 中对 `movementType` 先 trim，再做类型校验和数量校验，对齐 Rust `adjust_inventory` / `adjust_order_inventory` 对调整类型参数的裁剪口径；`tests/node/test-inventory-api-fallback.mjs` 补充 `" adjust "` 数量 0 不被当作普通出入库拦截、`" produce "` 和 `" adjust "` 订单库存调整可通过的断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 本次客户列表浏览器 fallback 筛选口径对齐：`src/features/customers/api/customers-api.ts` 在 fallback 快速筛选中对 `quickFilter` 先 trim 再校验/筛选，对齐 Rust 客户列表/导出查询对快速筛选参数的裁剪口径；`tests/node/test-customer-api-fallback.mjs` 补充 `" missingPhone "` 仍按缺手机号客户筛选的断言。配套验证命令：`node tests/node/test-customer-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 本次商品列表浏览器 fallback 筛选口径对齐：`src/features/products/api/products-api.ts` 在 fallback 商品筛选中对 `assignmentStatus` 先 trim 再校验/筛选，对齐 Rust `resolve_product_filters` 对归属状态参数的裁剪口径；`tests/node/test-product-api-fallback.mjs` 补充 `" assigned "` 仍按已分配商品筛选的断言。配套验证命令：`node tests/node/test-product-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 本次浏览器 fallback 隔离提交：订单库存创建出库单后写回订单 `deliveryNoteId` 时，库存模块派发的 `fallback-order-upserted` 事件改为克隆 `OrderDetail` 和嵌套 `items`，避免事件 detail 与写回订单对象共享引用；`tests/node/test-inventory-api-fallback.mjs` 补充事件 detail 的出库单号和明细数量被外部修改后 localStorage 订单仍保持原值的断言。配套验证命令：`node tests/node/test-inventory-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 本次浏览器 fallback 隔离提交：商品资料更新同步未下订单明细时，商品模块派发的 `fallback-order-upserted` 事件改为克隆订单详情和嵌套 `items`，避免事件 detail 与同步对象共享引用；`tests/node/test-product-api-fallback.mjs` 补充事件 detail 中明细商品名/数量被外部修改后 localStorage 同步订单仍保持原值的断言。配套验证命令：`node tests/node/test-product-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 本次浏览器 fallback 隔离提交：客户资料更新/删除同步订单时，`fallback-order-upserted` 事件改为克隆订单详情和嵌套 `items` 后派发，避免客户模块生成的订单事件 detail 与同步对象共享引用；`tests/node/test-customer-api-fallback.mjs` 补充事件明细数量被外部修改后 localStorage 中同步订单仍保持原数量的断言。配套验证命令：`node tests/node/test-customer-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 本次浏览器 fallback 隔离提交：客户 `fallback-customer-upserted` 事件统一通过 helper 克隆 `Customer` 后派发，避免事件监听者修改 `CustomEvent.detail` 时污染客户缓存；`tests/node/test-customer-api-fallback.mjs` 补充新增和更新客户事件 detail 修改后列表仍保持原值的断言。配套验证命令：`node tests/node/test-customer-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 本次浏览器 fallback 隔离提交：订单 `fallback-order-upserted` 事件发送和接收都改为克隆 `OrderDetail`，避免事件监听者或外部派发方通过 `CustomEvent.detail.items` 意外污染订单缓存；`tests/node/test-order-api-fallback.mjs` 补充事件 detail 修改后再次读取订单仍保持原数量的断言。配套验证命令：`node tests/node/test-order-api-fallback.mjs`、`CI=true pnpm run build`、`git diff --check`。
+- 本次功能提交：客户库存合并出库改为保存一张客户库存出库单，单内用计价方案表承载多价格快照；订单库存新建出库单数量默认空，订单库存和客户库存出库明细均提供“全部出库 / 清空”，清空按钮在明细数量全空时禁用。
+- 本次代码清理提交：统一浏览器 fallback 运行时判断和 localStorage JSON 读写到 `browser-runtime.ts`，客户/商品/订单/库存/设置/导出相关代码和 fallback 测试已接入；业务行为不变。
+- 本次交互优化提交：库存页操作按钮按页签归属显示，订单批量入库改为空白起始并通过“填入默认入库”显式填剩余数量。
+- 本次功能提交：客户库存合并出库支持多价格快照拆分计价方案，客户库存出库明细新增分组列并复用订单合并出库单列宽口径。
+- 本次功能提交：优化多价格组合并出库单打印分页和统计版式，价格组可顺接同页显示，最终合并统计与货款区域按当前打印口径排版。
+- 本次功能提交：支持同客户多张出库单合并打印，按价格快照分方案统计，同价多单支持必填分组说明；同时修复出库单系统打印右侧竖线裁剪和订单明细备注带入出库单。
+- 本次功能提交：商品批量导入识别归属客户并自动建立客户商品关系，优化商品导入重复提示为带行号和具体值的业务文案；前端预览和浏览器 fallback 同步更新。
+- 本次功能提交：修复订单明细导入弹窗错误提示撑出底部按钮的问题，并统一订单明细下载模板和导出明细为可再导入 CSV 格式；顺手收敛后端出库单额外收费校验和相关测试，业务行为保持一致。
+- 本次测试脚本清理提交：`tests/node/test-utils.mjs` 新增浏览器测试窗口和内存 `localStorage` helper，客户/商品/订单 API fallback 测试已复用，测试覆盖不变。
+- 本次前端测试补强提交：`tests/node/test-order-form-utils.mjs` 批量补充订单表单工具边界单测，覆盖默认值/空行、加工费 helper、缺失加工费文案、订单详情回填、明细汇总、无效重量和状态徽标全分支；业务逻辑不变。
+- 本次前端测试补强提交：`tests/node/test-inventory-utils.mjs` 批量补充库存工具边界单测，覆盖库存通知文案、规格显示、视图/筛选/重量字段常量、OCR 型号归一、多候选/未匹配状态和识别结果去重；业务逻辑不变。
+- 本次前端测试补强提交：`tests/node/test-shared-utils.mjs` 补充日期时间格式化和文件名解析边界单测，覆盖空值 fallback、非法时间和 `file://` 空格路径解码；业务逻辑不变。
+- 本次后端测试补强提交：`processing_fees.rs` 补充加工费快照单测，覆盖类别标签、按类别取值和是否存在有效加工费；业务逻辑不变。
+- 本次前端测试补强提交：`tests/node/test-processing-fees.mjs` 补充加工费快照 helper 单测，覆盖空快照、按类别取值、有效加工费判断和类别标签兜底；业务逻辑不变。
+- 本次后端测试补强提交：`inventory.rs` 补充库存相关 ID 生成单测，覆盖库存流水、客户库存批次、客户库存流水、库存明细和出库单明细编号格式；业务逻辑不变。
+- 本次后端测试补强提交：`orders.rs` 补充订单明细导入路径标准化和订单编号生成单测，覆盖 `file://` 前缀处理、普通路径保留、按下单日期递增编号和日期格式错误；业务逻辑不变。
+- 本次后端测试补强提交：`customers.rs` 补充客户导入路径标准化和客户 ID 生成单测，覆盖 `file://` 百分号解码、普通路径保留和 `CUS-` 数字后缀递增；业务逻辑不变。
+- 本次后端测试补强提交：`products.rs` 补充商品导入路径标准化和商品 ID 生成单测，覆盖 `file://` 百分号解码、普通路径保留和 `PROD-` 数字后缀递增；业务逻辑不变。
+- 本次后端测试补强提交：`products.rs` 新增商品导入解析单测，覆盖别名表头、小数单位换算、非法数字和重复商品/模具编号错误聚合；业务逻辑不变。
+- 本次后端测试补强提交：`inventory.rs` 新增库存业务规则单测，覆盖业务日期格式、客户库存重量分类和必填加工费错误提示；业务逻辑不变。
+- 本次后端测试补强提交：`customers.rs` 新增客户导入行级错误单测，覆盖默认计价非法、金额非法和重复客户名称的错误聚合；业务逻辑不变。
+- 本次后端测试补强提交：`orders.rs` 新增订单明细导入解析单测，覆盖英文/变体表头、字段裁剪、备注列和缺少必填列错误提示；业务逻辑不变。
+- 本次测试补强提交：`tests/node/test-shared-utils.mjs` 覆盖错误信息提取 helper 的空值、字符串、Error 对象和 fallback 行为；业务逻辑不变。
+- 本次测试补强提交：新增 `tests/node/test-export-file.mjs`，覆盖 CSV 导出在浏览器环境的下载链接创建/回收，以及 Tauri 环境的保存对话框和 `write_text_file` 调用，并接入 `pnpm run check`。
+- 本次测试补强提交：新增 `tests/node/test-inventory-api-fallback.mjs`，覆盖库存 API 浏览器 fallback 的订单库存同步、出库单创建/查询、图片识别错误提示、公共/订单库存 no-op 和客户历史库存错误提示，并接入 `pnpm run check`。
+- 本次测试补强提交：新增 `tests/node/test-settings-api.mjs`，覆盖设置页 API 的浏览器预览错误提示、Tauri dialog 参数、备份默认文件名、备份/恢复 invoke 参数，并接入 `pnpm run check`。
+- 本次测试补强提交：新增 `tests/node/test-order-api-fallback.mjs`，覆盖订单浏览器 fallback 的创建、订单号生成、理论重量、列表/详情、更新事件、删除和明细导入错误提示，并接入 `pnpm run check`。
+- 本次测试补强提交：新增 `tests/node/test-customer-api-fallback.mjs`，覆盖客户浏览器 fallback 的创建、导入、分页/搜索/快速筛选、导出、更新事件、删除和文件导入错误提示，并接入 `pnpm run check`。
+- 本次测试补强提交：新增 `tests/node/test-product-api-fallback.mjs`，覆盖商品浏览器 fallback 的创建、导入、分页/筛选、分配客户、编辑、删除和文件导入错误提示，并接入 `pnpm run check`。
+- 本次测试补强提交：新增 `tests/node/test-shared-utils.mjs`，覆盖金额、整数输入、日期、CSV、文件名和计量格式等公共工具规则，并接入 `pnpm run check`。
+- 本次工程化提交：新增根目录 `check:rust` 和 `check:all` 脚本，把 Rust 格式/Clippy/单测和前端检查统一到 `package.json` 入口。
+- 本次测试脚本清理提交：新增 `tests/node/test-utils.mjs` 共享 TypeScript 临时转译/导入 helper，颜色、库存、订单和客户工具测试脚本已复用，测试覆盖不变。
+- 本次测试补强提交：新增 `tests/node/test-customer-form-utils.mjs`，覆盖客户手机号/金额校验、默认计价解析、加工费字段映射、客户表单回填和默认/特殊加工费摘要，并接入 `pnpm run check`。
+- 本次测试补强提交：新增 `tests/node/test-order-form-utils.mjs`，覆盖订单铝锭价/加工费校验、订单 payload 构造、草稿快照比较、明细导入重复检测和理论重量计算，并接入 `pnpm run check`。
+- 本次测试补强提交：新增 `tests/node/test-inventory-utils.mjs`，覆盖出库重量必填分类、订单库存筛选/状态和批量入库 OCR 匹配规则，并接入 `pnpm run check`。
+- 本次工程化提交：新增前端统一检查脚本 `typecheck`、`check` 和 `check:full`，方便日常验证严格类型、颜色规则、构建和 UI 冒烟。
+- 本次代码清理提交：删除无引用的前端加工费空对象 helper，补强前端颜色分类测试，并忽略 Playwright 测试产物；功能行为不变。
+- 本次代码清理提交：抽取客户、订单和库存大页面纯逻辑到 feature lib 工具模块，并补充日期工具复用；页面组件保留 UI 和交互，业务行为不变。
+- 本次代码清理提交：批量入库图片识别已接入，支持多图选择、预览、旋转、重复路径跳过、识别结果预览和一键应用；OCR 按表头裁支数列二次识别，补齐 `4支` / `4 支` 丢块问题。
+- 本次代码清理提交：抽取前端公共工具函数，减少页面和打印组件重复实现。
+- `8fd35e2 Refine delivery note print pagination`：出库单打印改为 A4 纵向显式分页，预览区一页一张纸，每页 36 条明细；系统打印压紧表格和货款区域，保留顶部边距。订单打印未改动，仍为每页 22 条明细。
+
+## 注意事项
+
+- 开始新任务前先看 `git status --short`，不要随意回滚用户或其他会话留下的改动。
+- 不要使用 `git reset --hard` 或 `git checkout --`。
+- 开发期可删除本地数据库重建。
+- 数据库文件通常在：`/Users/jnhxf/Library/Application Support/com.jnhxf.order-manager/order-manager.sqlite`
+- 开发阶段不做数据库迁移；只维护当前初始化 SQL，结构变化后直接删除本地 SQLite 重建；`src-tauri/src/db.rs` 不保留 `ALTER TABLE` / schema patch 兼容代码。
+
+## 新对话启动提示
+
+在新的 Codex 对话里，建议第一句话使用：
+
+```text
+请先读取 /Users/jnhxf/projects/r/order-manager/docs/codex-context.md，然后继续开发这个项目。
+```

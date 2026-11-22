@@ -1699,3 +1699,15 @@ fn inventory_id_generation_uses_expected_prefixes_and_suffixes() {
         format!("{customer_initials}-20260622008")
     );
 }
+
+#[test]
+fn customer_name_initials_use_pinyin_on_all_platforms() {
+    // 与 macOS 原来的 Foundation 转换结果一致，且 Windows 上不再回退成 "KH"。
+    assert_eq!(customer_name_initials("姜总"), "JZ");
+    assert_eq!(customer_name_initials("袁庆龙"), "YQL");
+    assert_eq!(customer_name_initials("邹城姜总"), "ZCJZ");
+    assert_eq!(customer_name_initials("测试客户"), "CSKH");
+    assert_eq!(customer_name_initials("客户A"), "KHA");
+    assert_eq!(customer_name_initials("ABC公司"), "AGS");
+    assert_eq!(customer_name_initials("   "), "KH");
+}

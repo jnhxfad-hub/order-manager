@@ -2,8 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use calamine::{open_workbook_auto, Data, Reader};
-#[cfg(target_os = "macos")]
-use objc2_foundation::{NSString, NSStringTransformMandarinToLatin};
+use pinyin::ToPinyin;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde::Serialize;
@@ -2581,50 +2580,39 @@ pub(crate) fn next_customer_inventory_delivery_note_id(
 }
 
 pub(crate) fn customer_name_initials(customer_name: &str) -> String {
-    #[cfg(target_os = "macos")]
-    {
-        let normalized = customer_name.trim();
+    // 纯 Rust 拼音转换，所有平台同一套逻辑，与 macOS 原来的
+    // Foundation Mandarin-Latin 转换结果一致：每个汉字取拼音首字母，
+    // 连续的 ASCII 字母数字只取第一个（例如 "ABC公司" -> "AGS"），
+    // 其余字符（空格、标点）跳过。
+    let normalized = customer_name.trim();
 
-        if normalized.is_empty() {
-            return "KH".to_string();
-        }
+    if normalized.is_empty() {
+        return "KH".to_string();
+    }
 
-        let ns_string = NSString::from_str(normalized);
-        // SAFETY: Foundation provides this process-wide immutable transform constant.
-        let mandarin_transform = unsafe { &NSStringTransformMandarinToLatin };
-        let latin = ns_string
-            .stringByApplyingTransform_reverse(mandarin_transform, false)
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| normalized.to_string());
+    let mut initials = String::new();
+    let mut chars = normalized.chars().peekable();
 
-        let initials = latin
-            .split_whitespace()
-            .filter_map(|part| part.chars().next())
-            .map(|ch| ch.to_ascii_uppercase())
-            .filter(|ch| ch.is_ascii_alphanumeric())
-            .collect::<String>();
-
-        if initials.is_empty() {
-            "KH".to_string()
-        } else {
-            initials
+    while let Some(ch) = chars.next() {
+        if ch.is_ascii_alphanumeric() {
+            initials.push(ch.to_ascii_uppercase());
+            while chars
+                .peek()
+                .is_some_and(|next| next.is_ascii_alphanumeric())
+            {
+                chars.next();
+            }
+        } else if let Some(pinyin) = ch.to_pinyin() {
+            if let Some(first) = pinyin.plain().chars().next() {
+                initials.push(first.to_ascii_uppercase());
+            }
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        let initials = customer_name
-            .trim()
-            .chars()
-            .filter(|ch| ch.is_ascii_alphanumeric())
-            .map(|ch| ch.to_ascii_uppercase())
-            .collect::<String>();
-
-        if initials.is_empty() {
-            "KH".to_string()
-        } else {
-            initials
-        }
+    if initials.is_empty() {
+        "KH".to_string()
+    } else {
+        initials
     }
 }
 

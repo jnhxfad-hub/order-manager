@@ -1192,6 +1192,14 @@
   margin: 8mm 8mm 6mm;
 }
 
+/* 出库单 / 客户库存打印走竖向：把命名页面挂到出库单容器上，
+   Windows 的 WebView2（Chromium）打印时会按这个方向预设打印对话框，
+   不用再手动改方向。销售单仍走上面默认的 A4 横向。
+   macOS 上打印方向仍由 print_current_window 的 NSPrintInfo 设置，两边不冲突。 */
+.print-delivery-note {
+  page: print-delivery-note-page;
+}
+
 @media print {
   html,
   body,

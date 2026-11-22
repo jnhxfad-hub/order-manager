@@ -176,7 +176,8 @@ fn map_inventory_image_recognition_error(message: String) -> CommandError {
         "入库图片路径包含无法识别的字符" => "INVENTORY_IMAGE_PATH_INVALID",
         "当前系统暂不支持图片文字识别"
         | "当前系统不支持 Vision 图片识别"
-        | "当前系统不支持文字识别" => "OCR_UNSUPPORTED",
+        | "当前系统不支持文字识别"
+        | "Windows 未安装中文识别语言包" => "OCR_UNSUPPORTED",
         "无法初始化文字识别请求" | "无法初始化图片识别" | "图片文字识别失败" => {
             "OCR_RECOGNITION_FAILED"
         }
@@ -1391,7 +1392,15 @@ fn recognize_text_blocks(
     macos_vision::recognize_text_blocks(path, rotation_degrees)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn recognize_text_blocks(
+    path: &PathBuf,
+    rotation_degrees: i64,
+) -> Result<Vec<RecognizedTextBlock>, String> {
+    windows_ocr::recognize_text_blocks(path, rotation_degrees)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn recognize_text_blocks(
     _path: &PathBuf,
     _rotation_degrees: i64,
@@ -1523,6 +1532,184 @@ mod macos_vision {
     }
 }
 
+// Windows 识别：系统自带的 Windows.Media.Ocr（WinRT），无需另外安装模型或联网。
+// 注意：中文识别依赖系统里安装的中文 OCR 语言包（功能名称 Language.OCR~~~zh-CN~0.0.1.0）。
+// 如果没装，设置 > 时间和语言 > 语言和区域 > 添加中文（简体），并勾选“光学字符识别”；
+// 或以管理员身份在 PowerShell 执行：
+//   Add-WindowsCapability -Online -Name Language.OCR~~~zh-CN~0.0.1.0
+// 没装时这里返回中文提示，调用方按 OCR_UNSUPPORTED 处理。
+#[cfg(target_os = "windows")]
+mod windows_ocr {
+    use std::path::PathBuf;
+    use std::sync::Once;
+    use std::time::{Duration, Instant};
+
+    use windows::core::{HSTRING, RuntimeType};
+    use windows::Globalization::Language;
+    use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
+    use windows::Media::Ocr::OcrEngine;
+    use windows::Storage::Streams::{DataWriter, IBuffer, InMemoryRandomAccessStream};
+    use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
+
+    use super::RecognizedTextBlock;
+
+    pub fn recognize_text_blocks(
+        path: &PathBuf,
+        rotation_degrees: i64,
+    ) -> Result<Vec<RecognizedTextBlock>, String> {
+        ensure_winrt_initialized();
+        let engine = create_chinese_ocr_engine()?;
+        let (bitmap, width, height) = load_software_bitmap(path, rotation_degrees, &engine)?;
+        let operation = engine
+            .RecognizeAsync(&bitmap)
+            .map_err(|error| format!("图片文字识别失败：{error}"))?;
+        let result = await_operation(operation)?;
+
+        let mut blocks = Vec::new();
+        let lines = result
+            .Lines()
+            .map_err(|error| format!("图片文字识别失败：{error}"))?;
+        for line in lines {
+            let words = line
+                .Words()
+                .map_err(|error| format!("图片文字识别失败：{error}"))?;
+            for word in words {
+                let text = word
+                    .Text()
+                    .map_err(|error| format!("图片文字识别失败：{error}"))?
+                    .to_string();
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let rect = word
+                    .BoundingRect()
+                    .map_err(|error| format!("图片文字识别失败：{error}"))?;
+                // Windows 的 BoundingRect 以左上角为原点；macOS Vision 以左下角为原点，
+                // 这里换算成左下角原点，让下游按行分组、按列解析的逻辑两边完全一致。
+                blocks.push(RecognizedTextBlock {
+                    text,
+                    x: rect.X as f64 / width,
+                    y: 1.0 - (rect.Y as f64 + rect.Height as f64) / height,
+                    width: rect.Width as f64 / width,
+                    height: rect.Height as f64 / height,
+                });
+            }
+        }
+
+        Ok(blocks)
+    }
+
+    fn ensure_winrt_initialized() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            // 已初始化（例如调用方线程已有其他单元模型）时忽略错误，
+            // 后续 WinRT 调用失败会以正常的识别错误返回。
+            let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        });
+    }
+
+    fn create_chinese_ocr_engine() -> Result<OcrEngine, String> {
+        for tag in ["zh-Hans", "zh-Hant"] {
+            if let Ok(language) = Language::CreateLanguage(&HSTRING::from(tag)) {
+                if OcrEngine::IsLanguageSupported(&language).unwrap_or(false) {
+                    if let Ok(engine) = OcrEngine::TryCreateFromLanguage(&language) {
+                        return Ok(engine);
+                    }
+                }
+            }
+        }
+
+        // 用户语言列表里的中文也可以（例如系统显示语言是英文但装了中文语言包）。
+        if let Ok(engine) = OcrEngine::TryCreateFromUserProfileLanguages() {
+            let is_chinese = engine
+                .RecognizerLanguage()
+                .and_then(|language| language.LanguageTag())
+                .map(|tag| tag.to_string_lossy().starts_with("zh"))
+                .unwrap_or(false);
+            if is_chinese {
+                return Ok(engine);
+            }
+        }
+
+        Err("Windows 未安装中文识别语言包".to_string())
+    }
+
+    fn load_software_bitmap(
+        path: &PathBuf,
+        rotation_degrees: i64,
+        engine: &OcrEngine,
+    ) -> Result<(SoftwareBitmap, f64, f64), String> {
+        let image = image::open(path).map_err(|error| format!("读取入库图片失败：{error}"))?;
+        let image = match rotation_degrees.rem_euclid(360) {
+            90 => image.rotate90(),
+            180 => image.rotate180(),
+            270 => image.rotate270(),
+            _ => image,
+        };
+        let max_dimension = OcrEngine::MaxImageDimension().unwrap_or(4096);
+        let image = if image.width() > max_dimension || image.height() > max_dimension {
+            image.thumbnail(max_dimension, max_dimension)
+        } else {
+            image
+        };
+        let bgra = image.to_bgra8();
+        let (width, height) = bgra.dimensions();
+        let buffer = bytes_to_buffer(bgra.as_raw())?;
+        let bitmap = SoftwareBitmap::CreateCopyFromBuffer(
+            &buffer,
+            BitmapPixelFormat::Bgra8,
+            width as i32,
+            height as i32,
+        )
+        .map_err(|error| format!("无法初始化图片识别：{error}"))?;
+        Ok((bitmap, width as f64, height as f64))
+    }
+
+    fn bytes_to_buffer(bytes: &[u8]) -> Result<IBuffer, String> {
+        let stream = InMemoryRandomAccessStream::new()
+            .map_err(|error| format!("无法初始化图片识别：{error}"))?;
+        let writer = DataWriter::CreateDataWriter(&stream)
+            .map_err(|error| format!("无法初始化图片识别：{error}"))?;
+        writer
+            .WriteBytes(bytes)
+            .map_err(|error| format!("写入临时图片失败：{error}"))?;
+        let stored = writer
+            .StoreAsync()
+            .map_err(|error| format!("写入临时图片失败：{error}"))?;
+        await_operation(stored)?;
+        writer
+            .DetachBuffer()
+            .map_err(|error| format!("写入临时图片失败：{error}"))
+    }
+
+    // windows 0.62 把异步操作放到了 windows-future crate，且没有公开的阻塞等待，
+    // 这里轮询状态直到完成再取结果（与 windows-rs 官方示例的等待方式一致）。
+    fn await_operation<T: RuntimeType>(
+        operation: windows_future::IAsyncOperation<T>,
+    ) -> Result<T, String> {
+        let started = Instant::now();
+        loop {
+            match operation.Status() {
+                Ok(windows_future::AsyncStatus::Completed) => {
+                    return operation
+                        .GetResults()
+                        .map_err(|error| format!("图片文字识别失败：{error}"));
+                }
+                Ok(windows_future::AsyncStatus::Started) => {
+                    if started.elapsed() > Duration::from_secs(120) {
+                        return Err("图片文字识别超时".to_string());
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Ok(status) => {
+                    return Err(format!("图片文字识别未完成（状态：{status:?}）"));
+                }
+                Err(error) => return Err(format!("图片文字识别失败：{error}")),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1565,6 +1752,7 @@ mod tests {
                 "INVENTORY_IMAGE_PATH_INVALID",
             ),
             ("当前系统不支持 Vision 图片识别", "OCR_UNSUPPORTED"),
+            ("Windows 未安装中文识别语言包", "OCR_UNSUPPORTED"),
             ("创建临时图片失败：权限不足", "OCR_TEMP_IMAGE_FAILED"),
             ("图片文字识别失败", "OCR_RECOGNITION_FAILED"),
             (

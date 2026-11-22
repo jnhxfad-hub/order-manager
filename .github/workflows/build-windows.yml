@@ -47,3 +47,13 @@ jobs:
           name: order-manager-windows-setup
           path: src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
+
+      # 免安装版：直接用编译出来的 exe，不用安装，双击就能跑
+      # （Win11 自带 WebView2，不需要额外装运行库）。
+      # 注意数据还是存在 %APPDATA% 里，和安装版共用同一份数据库。
+      - name: Upload portable exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: order-manager-windows-portable
+          path: src-tauri/target/release/order-manager.exe
+          if-no-files-found: error

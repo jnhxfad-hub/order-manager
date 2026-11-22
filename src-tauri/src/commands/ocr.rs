@@ -1652,7 +1652,14 @@ mod windows_ocr {
         } else {
             image
         };
-        let bgra = image.to_bgra8();
+        // DynamicImage 没有 to_bgra8（image 0.25 只有 to_rgba8），
+        // SoftwareBitmap 要的是 Bgra8 格式，所以把每个像素的 R 和 B 通道互换。
+        let mut bgra = image.to_rgba8();
+        for pixel in bgra.pixels_mut() {
+            let red = pixel[0];
+            pixel[0] = pixel[2];
+            pixel[2] = red;
+        }
         let (width, height) = bgra.dimensions();
         let buffer = bytes_to_buffer(bgra.as_raw())?;
         let bitmap = SoftwareBitmap::CreateCopyFromBuffer(
